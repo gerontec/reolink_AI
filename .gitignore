@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Data files
+*.pkl
+*.pth
+*.pt
+*.mp4
+*.jpg
+*.png
+data/uploads/*
+data/outputs/*
+!data/uploads/.gitkeep
+!data/outputs/.gitkeep
+
+# Logs
+*.log
+*.txt
+watchdog_stats*.txt
+
+# Config
+config/config.yaml
+*.secret
+
+# Models
+models/*.pt
+models/*.pth
+!models/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite

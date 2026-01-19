@@ -1,0 +1,62 @@
+# Reolink AI Watchdog Configuration
+
+# Camera Settings
+camera:
+  rtsp_url: "rtsp://username:password@192.168.1.XXX:554/h264Preview_01_main"
+  resolution: [4512, 2512]
+  fps: 15
+
+# Detection Zones
+zones:
+  horizontal_threshold_y: 628
+  vertical_threshold_factor: 0.75
+  alarm_right_quarter: true
+
+# Recording Settings
+recording:
+  base_dir: "/var/www/aufnahmen"
+  pre_record_seconds: 5
+  post_record_seconds: 30
+  record_all_persons: true
+
+# AI Settings
+ai:
+  target_classes: [0, 2, 3, 5, 7]  # person, car, truck, motorcycle, bus
+  day_mode:
+    confidence_tracking: 0.30
+    confidence_detection: 0.20
+    resolution: 1536
+  night_mode:
+    confidence_tracking: 0.10
+    confidence_detection: 0.18
+    resolution: 1024
+  auto_ir_detection: true
+  ir_check_interval: 30
+
+# Face Recognition
+face:
+  enabled: true
+  check_interval: 2.0
+  min_face_size: [100, 100]
+  recognition_threshold: 0.6
+  clustering_threshold: 0.7
+  auto_enroll_quality: 0.8
+
+# Database
+database:
+  host: "192.168.178.218"
+  user: "gh"
+  password: "CHANGE_ME"
+  database: "wagodb"
+
+# Logging
+logging:
+  stats_log: "watchdog_stats_live.txt"
+  max_log_size_kb: 100
+  classification_interval: 300
+
+# Web Dashboard
+dashboard:
+  report_dir: "/var/www/html/reports"
+  video_path: "/aufnahmen"
+  auto_refresh: 60
