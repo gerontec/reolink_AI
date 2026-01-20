@@ -40,7 +40,7 @@ RTSP_URL = "rtsp://gh2:Auchgut11@192.168.178.168:554/h264Preview_01_main"
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|timeout;10000000"
 
 THRESHOLD_Y = 628
-VERTICAL_THRESHOLD_FACTOR = 0.75
+THRESHOLD_X = 3000  # Vertical threshold (right quarter)
 ALARM_RIGHT_QUARTER = True
 RECORD_ALL_PERSONS = True  # Record when person detected, not just line crossing
 
@@ -59,27 +59,6 @@ AI_RESOLUTION = 1536
 MODE = "INITIALIZING"
 IR_CHECK_INTERVAL = 30  # Re-check IR mode every 30 seconds
 last_ir_check = 0
-
-# ─── DAY/NIGHT MODE ───────────────────────────────────────────────
-def is_night():
-    """Check if it's night time (IR camera mode)"""
-    hour = int(time.strftime('%H'))
-    return hour >= 20 or hour < 6
-
-# Dynamic confidence based on time of day
-if is_night():
-    # Night mode: ULTRA LOW confidence for IR detection
-    CONFIDENCE_TRACKING = 0.08
-    CONFIDENCE_DETECTION = 0.05
-    AI_RESOLUTION = 1024
-    MODE = "NIGHT (IR)"
-else:
-    # Day mode: Normal confidence
-    CONFIDENCE_TRACKING = 0.3
-    CONFIDENCE_DETECTION = 0.2
-    AI_RESOLUTION = 1536
-    MODE = "DAY"
-
 
 STATS_LOG = "watchdog_stats_live.txt"
 STATS_PICKLE = "watchdog_counters.pkl"
@@ -180,7 +159,7 @@ else:
     FRAME_WIDTH, FRAME_HEIGHT = 2560, 1440
     log(f"⚠️ Fallback: {FRAME_WIDTH}x{FRAME_HEIGHT}")
 
-VERTICAL_THRESHOLD_X = int(FRAME_WIDTH * VERTICAL_THRESHOLD_FACTOR)
+VERTICAL_THRESHOLD_X = THRESHOLD_X
 
 out = None
 recording_until = 0
@@ -266,8 +245,14 @@ try:
                     log(f"[DB SCENE ERROR] {e}")
             
             last_scene = now
+
             if sum(counts.values()) > 0:
                 log(f"📊 Scene: PKW:{counts['car']} LKW:{counts['truck']} Pers:{counts['person']}")
+                
+                # BACKUP: Keep recording if person in scene (even without tracking ID)
+            if counts['person'] > 0:
+                recording_until = max(recording_until, now + POST_RECORD_SECONDS)
+
 
         # ── 2. Image Classification (alle 5min) ───────────────────────
         if now - last_classification > CLASSIFICATION_INTERVAL:
