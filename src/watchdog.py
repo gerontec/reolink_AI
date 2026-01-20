@@ -219,9 +219,9 @@ try:
             if 'current_mode' not in globals():
                 global current_mode
                 current_mode = MODE
-                log(f"🔍 Auto-detected: {MODE} mode (IR score: {config['ir_score']:.0f})")
+                log(f"🔍 Auto-detected: {MODE} mode (IR score: {config['ir_score']:.0f}) | Track:{config['tracking']:.2f} Det:{config['detection']:.2f}")
             elif current_mode != MODE:
-                log(f"🔄 Mode changed: {current_mode} → {MODE} (IR score: {config['ir_score']:.0f})")
+                log(f"🔄 Mode changed: {current_mode} → {MODE} (IR score: {config['ir_score']:.0f}) | Track:{config['tracking']:.2f} Det:{config['detection']:.2f}")
                 current_mode = MODE
 
 
@@ -247,7 +247,12 @@ try:
             last_scene = now
 
             if sum(counts.values()) > 0:
-                log(f"📊 Scene: PKW:{counts['car']} LKW:{counts['truck']} Pers:{counts['person']}")
+                log(f"📊 Scene: PKW:{counts['car']} LKW:{counts['truck']} Pers:{counts['person']} | {MODE}")
+                
+                # BACKUP: Keep recording if person in scene
+                if counts["person"] > 0 and out is not None:
+                    recording_until = max(recording_until, now + POST_RECORD_SECONDS)
+                    log(f"🔄 Scene backup: Person detected, extending recording")
                 
                 # BACKUP: Keep recording if person in scene (even without tracking ID)
             if counts['person'] > 0:

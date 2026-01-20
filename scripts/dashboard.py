@@ -53,6 +53,7 @@ def generate_report():
           AND total_detections > 1000
           AND times_crossed_line = 0
           AND TIMESTAMPDIFF(HOUR, first_seen, last_seen) > 2
+          AND (total_detections / GREATEST(TIMESTAMPDIFF(HOUR, first_seen, last_seen), 1)) > 500
         ORDER BY total_detections DESC
         LIMIT 10
     """)

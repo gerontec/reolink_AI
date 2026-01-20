@@ -103,7 +103,7 @@ def get_adaptive_confidence(frame):
         # Day mode: Normal confidence
         return {
             'tracking': 0.30,
-            'detection': 0.20,
+            'detection': 0.25,
             'resolution': 1536,
             'mode': 'DAY',
             'ir_score': ir_score
