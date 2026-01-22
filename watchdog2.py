@@ -1133,7 +1133,7 @@ class FileProcessor:
                     
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
-                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=5)
+                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=1)
                     
                     # In DB eintragen
                     recording_id = self.insert_file_to_db(
