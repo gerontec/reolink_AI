@@ -30,31 +30,36 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $input = json_decode(file_get_contents('php://input'), true);
 
-$person_id = intval($input['person_id'] ?? 0);
+$face_id = intval($input['face_id'] ?? 0);
 $person_name = trim($input['person_name'] ?? '');
 
-if ($person_id <= 0 || empty($person_name)) {
+if ($face_id <= 0 || empty($person_name)) {
     echo json_encode(['success' => false, 'error' => 'Ungültige Parameter']);
     exit;
 }
 
 try {
-    // Insert or Update
+    // Update person_name in cam2_detected_faces
     $sql = "
-        INSERT INTO person_names (object_id, object_type, person_name)
-        VALUES (?, 'person', ?)
-        ON DUPLICATE KEY UPDATE person_name = VALUES(person_name), updated_at = NOW()
+        UPDATE cam2_detected_faces
+        SET person_name = ?
+        WHERE id = ?
     ";
-    
+
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([$person_id, $person_name]);
-    
+    $stmt->execute([$person_name, $face_id]);
+
+    if ($stmt->rowCount() === 0) {
+        echo json_encode(['success' => false, 'error' => 'Gesicht nicht gefunden']);
+        exit;
+    }
+
     echo json_encode([
         'success' => true,
-        'person_id' => $person_id,
+        'face_id' => $face_id,
         'person_name' => $person_name
     ]);
-    
+
 } catch (PDOException $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);

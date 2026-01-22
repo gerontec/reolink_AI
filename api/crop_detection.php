@@ -44,15 +44,15 @@ try {
     if ($type === 'face') {
         $sql = "
             SELECT f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2, r.file_path
-            FROM cam_detected_faces f
-            JOIN cam_recordings r ON f.recording_id = r.id
+            FROM cam2_detected_faces f
+            JOIN cam2_recordings r ON f.recording_id = r.id
             WHERE f.id = ?
         ";
     } else {
         $sql = "
             SELECT o.bbox_x1, o.bbox_y1, o.bbox_x2, o.bbox_y2, r.file_path
-            FROM cam_detected_objects o
-            JOIN cam_recordings r ON o.recording_id = r.id
+            FROM cam2_detected_objects o
+            JOIN cam2_recordings r ON o.recording_id = r.id
             WHERE o.id = ? AND o.object_class = 'person'
         ";
     }
