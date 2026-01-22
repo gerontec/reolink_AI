@@ -38,7 +38,6 @@ MEDIA_BASE_PATH = "/var/www/web1"
 ANNOTATED_OUTPUT_PATH = "/var/www/web1/annotated"
 FACES_OUTPUT_PATH = "/var/www/web1/faces"
 DB_CONFIG = {
-    'host': 'localhost',
     'database': 'wagodb',
     'user': 'gh',
     'password': 'a12345'
