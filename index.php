@@ -1,6 +1,6 @@
 <?php
 /**
- * CAM Admin - Schnelle Personen-Benennung (Refactored für cam_detected_faces)
+ * CAM2 Admin - Schnelle Personen-Benennung (5 neueste Gesichter mit hoher Qualität)
  */
 
 $db_config = [
@@ -28,10 +28,10 @@ try {
 
 // --- Statistiken (Neue Tabellenstruktur) ---
 $stats = [
-    'total_persons' => $pdo->query("SELECT COUNT(*) FROM cam_detected_faces")->fetchColumn(),
-    'unnamed_persons' => $pdo->query("SELECT COUNT(*) FROM cam_detected_faces WHERE person_name = 'Unknown'")->fetchColumn(),
-    'named_persons' => $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam_detected_faces WHERE person_name != 'Unknown'")->fetchColumn(),
-    'total_recordings' => $pdo->query("SELECT COUNT(*) FROM cam_recordings")->fetchColumn(),
+    'total_persons' => $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces")->fetchColumn(),
+    'unnamed_persons' => $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces WHERE person_name = 'Unknown'")->fetchColumn(),
+    'named_persons' => $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam2_detected_faces WHERE person_name != 'Unknown'")->fetchColumn(),
+    'total_recordings' => $pdo->query("SELECT COUNT(*) FROM cam2_recordings")->fetchColumn(),
 ];
 
 // Filter
@@ -40,30 +40,31 @@ $min_confidence = floatval($_GET['min_conf'] ?? 0.4); // Standard etwas höher f
 $min_size = intval($_GET['min_size'] ?? 40);       // Gesichter sind oft kleiner als ganze Körper
 $limit = intval($_GET['limit'] ?? 5);
 
-// --- Personen/Gesichter abrufen ---
+// --- Personen/Gesichter abrufen (5 neueste mit hoher Qualität) ---
 $sql = "
-    SELECT 
+    SELECT
         f.id,
         f.confidence,
         f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2,
         f.person_name,
+        f.detected_at,
         r.file_path,
         r.camera_name,
         r.recorded_at,
         (f.bbox_x2 - f.bbox_x1) * (f.bbox_y2 - f.bbox_y1) as area,
         (f.bbox_x2 - f.bbox_x1) as width,
         (f.bbox_y2 - f.bbox_y1) as height
-    FROM cam_detected_faces f
-    JOIN cam_recordings r ON f.recording_id = r.id
+    FROM cam2_detected_faces f
+    JOIN cam2_recordings r ON f.recording_id = r.id
     WHERE f.confidence >= ?
       AND (f.bbox_x2 - f.bbox_x1) >= ?
 ";
 
 if (!$show_all) {
-    $sql .= " AND f.person_name = 'Unknown'"; 
+    $sql .= " AND f.person_name = 'Unknown'";
 }
 
-$sql .= " ORDER BY area DESC, f.confidence DESC LIMIT ?";
+$sql .= " ORDER BY f.detected_at DESC, f.confidence DESC LIMIT ?";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute([$min_confidence, $min_size, $limit]);
@@ -71,10 +72,10 @@ $persons = $stmt->fetchAll();
 
 // Vorschläge für Autocomplete (Alle bereits vergebenen Namen)
 $named = $pdo->query("
-    SELECT person_name, COUNT(*) as count 
-    FROM cam_detected_faces 
+    SELECT person_name, COUNT(*) as count
+    FROM cam2_detected_faces
     WHERE person_name != 'Unknown'
-    GROUP BY person_name 
+    GROUP BY person_name
     ORDER BY person_name
 ")->fetchAll();
 ?>
@@ -94,7 +95,7 @@ $named = $pdo->query("
 <body>
     <div class="container">
         <header>
-            <h1>👤 CAM Admin - Gesichter zuordnen</h1>
+            <h1>👤 CAM2 Admin - Gesichter zuordnen (5 neueste)</h1>
             <div class="stats">
                 <div class="stat-box">
                     <span class="stat-value"><?= number_format($stats['total_persons']) ?></span>
