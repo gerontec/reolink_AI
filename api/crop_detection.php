@@ -13,7 +13,7 @@ $db_config = [
 
 try {
     $pdo = new PDO(
-        "mysql:host={$db_config['host']};dbname={$db_config['database']};charset={$db_config['charset']}",
+        "mysql:dbname={$db_config['database']};charset={$db_config['charset']}",
         $db_config['user'],
         $db_config['password'],
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
