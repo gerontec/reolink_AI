@@ -438,8 +438,8 @@ class AIAnalyzer:
                 providers=[('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
             )
             
-            # det_size für Tesla P4 optimiert (640x640 statt 1280x1280)
-            self.face_app.prepare(ctx_id=0, det_size=(640, 640))
+            # det_size für Tesla P4 optimiert (1280x1280 für 4K-Bilder)
+            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280))
             
             # Provider-Check
             providers = self.face_app.det_model.session.get_providers()
