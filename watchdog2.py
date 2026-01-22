@@ -1062,8 +1062,8 @@ class FileProcessor:
         for ext in ['*.mp4', '*.jpg']:
             media_files.extend(self.base_path.rglob(ext))
         
-        # Nach Datum sortieren (älteste zuerst)
-        media_files.sort(key=lambda p: p.stat().st_mtime)
+        # Nach Datum sortieren (neueste zuerst)
+        media_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         
         logger.info(f"Gefunden: {len(media_files)} Mediendateien")
         return media_files
