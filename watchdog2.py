@@ -1560,6 +1560,15 @@ class FileProcessor:
                             )
                             if annotated_path:
                                 self.annotated_count += 1
+
+                                # Zusätzlich: Kopiere als "latest.jpg" für schnellen Zugriff
+                                import shutil
+                                latest_path = self.annotator.output_dir / f"latest_{camera_name}.jpg"
+                                try:
+                                    shutil.copy2(annotated_path, latest_path)
+                                    logger.debug(f"✓ Latest-Kopie: {latest_path.name}")
+                                except Exception as e:
+                                    logger.warning(f"Fehler beim Kopieren von latest.jpg: {e}")
                     
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
