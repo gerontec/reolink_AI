@@ -1444,7 +1444,16 @@ class FileProcessor:
             return False
         
         camera_name, file_type, timestamp = parsed
-        
+
+        # JPG überspringen wenn entsprechendes MP4 existiert
+        if file_type == 'jpg':
+            # Konstruiere MP4-Dateinamen (gleicher Name, nur .mp4)
+            mp4_path = filepath.with_suffix('.mp4')
+            if mp4_path.exists():
+                logger.debug(f"⊘ JPG übersprungen (MP4 existiert): {filename}")
+                self.skipped_count += 1
+                return False
+
         # Prüfen ob bereits in DB
         rel_path = str(filepath.relative_to(self.base_path))
         
