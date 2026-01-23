@@ -36,29 +36,34 @@ def main():
 
     ser.close()
 
-    # Suche nach einer Datenzeile mit 13 Feldern
+    # Verarbeite ALLE Batteriezeilen (1, 2, 3)
     for line in data_lines:
         try:
             # Decode und split
             line_str = line.decode('utf-8', errors='ignore').strip()
 
-            # Überspringe Marker und leere Zeilen
-            if not line_str or line_str.startswith('$') or line_str.startswith('#'):
+            # Überspringe Marker, leere Zeilen und Header
+            if not line_str or line_str.startswith('$') or line_str.startswith('#') or 'Power' in line_str:
                 continue
 
             # Split nach Whitespace
             parts = line_str.split()
 
-            # Prüfe ob genug Felder (mindestens 13)
-            if len(parts) >= 13:
+            # Prüfe ob genug Felder (mindestens 14: Batterienummer + 13 Datenfelder)
+            if len(parts) >= 14:
                 # Versuche erste Felder als Zahlen zu parsen (Validierung)
                 try:
-                    float(parts[0])  # Power
-                    float(parts[1])  # Volt
+                    bat_num = int(parts[0])  # Batterienummer
+                    float(parts[1])  # Power
+                    float(parts[2])  # Volt
 
-                    # Daten gefunden! Rufe pv_ebox2.py auf
-                    data_fields = parts[:13]
-                    print(f"\n→ Speichere in DB: {' '.join(data_fields)}")
+                    # Überspringe "Absent" Batterien
+                    if parts[8] == 'Absent':
+                        continue
+
+                    # Daten gefunden! Verwende Felder 1-13 (ohne Batterienummer)
+                    data_fields = parts[1:14]
+                    print(f"\n→ Batterie {bat_num}: {' '.join(data_fields)}")
 
                     result = subprocess.run(
                         [PV_EBOX2_SCRIPT] + data_fields,
@@ -68,11 +73,11 @@ def main():
                     )
 
                     if result.returncode == 0:
-                        print("✓ Daten in DB gespeichert")
+                        print(f"✓ Batterie {bat_num} in DB gespeichert")
                     else:
-                        print(f"✗ DB-Fehler: {result.stderr}")
+                        print(f"✗ Batterie {bat_num} DB-Fehler: {result.stderr}")
 
-                    break  # Nur erste gültige Zeile verarbeiten
+                    # KEIN break - verarbeite alle Batterien!
 
                 except ValueError:
                     continue  # Keine gültigen numerischen Daten

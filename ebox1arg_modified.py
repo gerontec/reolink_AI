@@ -27,28 +27,35 @@ while data != b'\r$$\r\n':
 
 ser.close()
 
-# NEU: Versuche Datenzeile zu finden und in DB zu speichern
+# NEU: Verarbeite ALLE Batteriezeilen (1, 2, 3)
 for line in all_lines:
     try:
         line_str = line.decode('utf-8', errors='ignore').strip()
 
-        # Überspringe leere Zeilen und Marker
-        if not line_str or '$' in line_str or '#' in line_str:
+        # Überspringe leere Zeilen, Marker und Header
+        if not line_str or '$' in line_str or '#' in line_str or 'Power' in line_str:
             continue
 
         parts = line_str.split()
 
-        # Prüfe ob mindestens 13 Felder vorhanden
-        if len(parts) >= 13:
-            # Validiere dass erste Felder numerisch sind
+        # Prüfe ob mindestens 14 Felder vorhanden (Batterienummer + 13 Daten)
+        if len(parts) >= 14:
+            # Validiere dass Felder numerisch sind
             try:
-                float(parts[0])
-                float(parts[1])
+                bat_num = int(parts[0])  # Batterienummer
+                float(parts[1])  # Power
+                float(parts[2])  # Volt
 
-                # Daten gefunden! Rufe pv_ebox2.py auf
-                print(f"\n→ Rufe pv_ebox2.py auf mit: {' '.join(parts[:13])}")
-                subprocess.run(['/home/pi/python/pv_ebox2.py'] + parts[:13], timeout=5)
-                break
+                # Überspringe "Absent" Batterien
+                if parts[8] == 'Absent':
+                    continue
+
+                # Daten gefunden! Verwende Felder 1-13 (ohne Batterienummer)
+                data_fields = parts[1:14]
+                print(f"\n→ Batterie {bat_num}: {' '.join(data_fields)}")
+                subprocess.run(['/home/pi/python/pv_ebox2.py'] + data_fields, timeout=5)
+
+                # KEIN break hier - verarbeite alle Batterien!
 
             except ValueError:
                 continue

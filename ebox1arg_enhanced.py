@@ -22,44 +22,50 @@ PV_EBOX2_SCRIPT = '/home/pi/python/pv_ebox2.py'
 
 def parse_data_line(line):
     """
-    Parst eine Datenzeile und extrahiert die 13 Felder
+    Parst eine Datenzeile und extrahiert die 13 Datenfelder (ohne Batterienummer)
 
     Erwartet Format (Beispiel):
-    b'123.4 48.2 2.5 25.3 20.1 30.5 45.0 50.0 OK OK OK OK 85%\r\n'
+    b'1     52923  -3342  19000  15000  16000  3305   3311   Dischg   Normal   Normal   Normal   84%\r\n'
+    (Batterienummer + 13 Datenfelder)
 
     Returns:
-        Liste mit 13 Werten oder None wenn ungültig
+        Tuple (battery_num, data_fields) oder (None, None) wenn ungültig
     """
     try:
         # Bytes zu String
         line_str = line.decode('utf-8', errors='ignore').strip()
 
-        # Überspringe leere Zeilen und Marker
-        if not line_str or line_str.startswith('$') or line_str.startswith('#'):
-            return None
+        # Überspringe leere Zeilen, Marker und Header
+        if not line_str or line_str.startswith('$') or line_str.startswith('#') or 'Power' in line_str:
+            return None, None
 
         # Split nach Whitespace
         parts = line_str.split()
 
-        # Prüfe ob genug Felder vorhanden (mindestens 13)
-        if len(parts) < 13:
-            return None
+        # Prüfe ob genug Felder vorhanden (mindestens 14: Batterienummer + 13 Daten)
+        if len(parts) < 14:
+            return None, None
 
-        # Erste 13 Felder extrahieren
-        data = parts[:13]
+        # Batterienummer und 13 Datenfelder extrahieren
+        battery_num = int(parts[0])
+        data = parts[1:14]
+
+        # Überspringe "Absent" Batterien
+        if data[7] == 'Absent':  # BaseSt ist Feld 7 (0-indexed in data)
+            return None, None
 
         # Validierung: Erste Felder sollten numerisch sein
         try:
             float(data[0])  # Power
             float(data[1])  # Volt
             float(data[2])  # Curr
-            return data
+            return battery_num, data
         except ValueError:
-            return None
+            return None, None
 
     except Exception as e:
         print(f"Fehler beim Parsen: {e}")
-        return None
+        return None, None
 
 def send_command_and_collect(cmd):
     """
@@ -110,13 +116,13 @@ def save_to_database(data_fields):
     Ruft pv_ebox2.py mit den Datenfeldern auf
 
     Args:
-        data_fields: Liste mit 13 Datenfeldern
+        data_fields: Liste mit 13 Datenfeldern (ohne Batterienummer)
     """
     try:
         # Baue Kommando
         cmd = [PV_EBOX2_SCRIPT] + data_fields
 
-        print(f"\n→ Speichere in DB: {' '.join(data_fields)}")
+        print(f"  Datenfelder: {' '.join(data_fields[:4])}... SOC={data_fields[12]}")
 
         # Führe Script aus
         result = subprocess.run(
@@ -157,23 +163,25 @@ def main():
         print("✗ Keine Daten empfangen")
         sys.exit(1)
 
-    # 2. Relevante Datenzeile finden und parsen
-    valid_data = None
+    # 2. ALLE Batteriezeilen finden und parsen
+    batteries_found = []
     for line in data_lines:
-        parsed = parse_data_line(line)
-        if parsed:
-            valid_data = parsed
-            break
+        battery_num, data_fields = parse_data_line(line)
+        if battery_num is not None and data_fields is not None:
+            batteries_found.append((battery_num, data_fields))
 
-    if not valid_data:
+    if not batteries_found:
         print("⚠ Keine gültigen Daten gefunden")
         print("Empfangene Zeilen:")
         for line in data_lines:
             print(f"  {line}")
         sys.exit(1)
 
-    # 3. In Datenbank speichern
-    save_to_database(valid_data)
+    # 3. Alle Batterien in Datenbank speichern
+    print(f"\n✓ {len(batteries_found)} Batterie(n) gefunden")
+    for battery_num, data_fields in batteries_found:
+        print(f"\n→ Verarbeite Batterie {battery_num}")
+        save_to_database(data_fields)
 
     print("\n✓ Fertig!")
 
