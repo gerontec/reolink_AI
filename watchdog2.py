@@ -44,7 +44,7 @@ DB_CONFIG = {
 }
 
 # AI Model paths
-YOLO_MODEL_PATH = "/opt/models/yolov8n.pt"
+YOLO_MODEL_PATH = "/opt/models/yolov8l.pt"  # Large model for better accuracy
 KNOWN_FACES_DIR = "/opt/known_faces"
 
 # Logging Setup
@@ -604,10 +604,13 @@ class AIAnalyzer:
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
-            
+
+            # Szenen-Klassifikation
+            results['scene_category'] = self._classify_scene(results)
+
         except Exception as e:
             logger.error(f"Fehler bei Bildanalyse {image_path}: {e}")
-        
+
         return results
     
     def _detect_faces(self, image: np.ndarray) -> List[Dict[str, Any]]:
@@ -810,15 +813,48 @@ class AIAnalyzer:
             results['known_faces_count'] = len(unique_faces)
             results['objects'] = [{'class': obj} for obj in unique_objects]
             results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
-            
+
+            # Szenen-Klassifikation basierend auf Video-Analyse
+            results['scene_category'] = self._classify_scene(results)
+
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
-                       f"{len(unique_faces)} bekannte Gesichter, {results['max_persons']} max. Personen")
-        
+                       f"{len(unique_faces)} bekannte Gesichter, {results['max_persons']} max. Personen, "
+                       f"Szene: {results['scene_category']}")
+
         except Exception as e:
             logger.error(f"Fehler bei Video-Analyse {video_path}: {e}")
-        
+
         return results
-    
+
+    def _classify_scene(self, results: Dict[str, Any]) -> str:
+        """
+        Klassifiziert die Szene basierend auf erkannten Objekten
+        Kategorien: parking, street, entrance, indoor, empty
+        """
+        vehicles = results.get('vehicles', [])
+        persons = results.get('persons', 0)
+        objects = results.get('objects', [])
+
+        # Zähle Objekt-Typen
+        num_vehicles = len(vehicles)
+        num_persons = persons
+
+        # Klassifikationslogik
+        if num_vehicles >= 2 and num_persons == 0:
+            return 'parking'  # Mehrere Fahrzeuge, keine Personen = Parkplatz
+        elif num_vehicles >= 1 and num_persons >= 1:
+            return 'street'  # Fahrzeuge + Personen = Straßenszene
+        elif num_persons >= 2 and num_vehicles == 0:
+            return 'entrance'  # Mehrere Personen ohne Fahrzeuge = Eingangsbereich
+        elif num_persons == 1 and num_vehicles == 0:
+            return 'visitor'  # Eine Person = Besucher
+        elif num_vehicles == 1 and num_persons == 0:
+            return 'delivery'  # Ein Fahrzeug alleine = Lieferung/Anlieferung
+        elif len(objects) == 0:
+            return 'empty'  # Keine Objekte = leere Szene
+        else:
+            return 'unknown'  # Alles andere
+
     def analyze_image_array(self, image: np.ndarray) -> Dict[str, Any]:
         """Analysiert Bild als numpy array (für Video-Frames)"""
         results = {
@@ -840,7 +876,10 @@ class AIAnalyzer:
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
-        
+
+            # Szenen-Klassifikation
+            results['scene_category'] = self._classify_scene(results)
+
         except Exception as e:
             logger.error(f"Fehler bei Array-Analyse: {e}")
         
@@ -1036,10 +1075,10 @@ class FileProcessor:
             
             # Zusammenfassung eintragen
             query = """
-                INSERT INTO cam2_analysis_summary 
-                (recording_id, total_faces, total_objects, total_vehicles, 
-                 max_persons, gpu_used, analyzed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                INSERT INTO cam2_analysis_summary
+                (recording_id, total_faces, total_objects, total_vehicles,
+                 max_persons, scene_category, gpu_used, analyzed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
             """
             values = (
                 recording_id,
@@ -1047,6 +1086,7 @@ class FileProcessor:
                 len(results.get('objects', [])),
                 len(results.get('vehicles', [])),
                 results.get('max_persons', results.get('persons', 0)),
+                results.get('scene_category', 'unknown'),
                 results.get('gpu_used', False)
             )
             cursor.execute(query, values)
@@ -1299,10 +1339,12 @@ def create_database_schema():
         total_objects INT DEFAULT 0,
         total_vehicles INT DEFAULT 0,
         max_persons INT DEFAULT 0,
+        scene_category VARCHAR(50) DEFAULT 'unknown',
         gpu_used BOOLEAN DEFAULT FALSE,
         analyzed_at DATETIME NOT NULL,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
-        INDEX idx_recording (recording_id)
+        INDEX idx_recording (recording_id),
+        INDEX idx_scene (scene_category)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
     
