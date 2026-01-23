@@ -191,10 +191,12 @@ $named = $pdo->query("
             if (result.success) {
                 location.reload();
             } else {
-                alert('Fehler beim Löschen: ' + result.error);
+                console.error('Fehler beim Löschen:', result.error);
+                location.reload();
             }
         } catch (e) {
-            alert('Fehler beim Löschen: ' + e);
+            console.error('Fehler beim Löschen:', e);
+            location.reload();
         }
     }
     </script>
