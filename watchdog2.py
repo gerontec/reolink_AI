@@ -439,8 +439,9 @@ class AIAnalyzer:
                 providers=[('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
             )
             
-            # det_size für Tesla P4 optimiert (1280x1280 für 4K-Bilder)
-            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280))
+            # det_size erhöht für bessere Detection kleiner Gesichter (1920x1920 für 4K-Bilder)
+            # 1280 war zu klein, Personen waren erkennbar aber Gesichter wurden nicht gefunden
+            self.face_app.prepare(ctx_id=0, det_size=(1920, 1920))
             
             # Provider-Check
             providers = self.face_app.det_model.session.get_providers()
@@ -627,7 +628,10 @@ class AIAnalyzer:
         try:
             # InsightFace Detection (GPU)
             detected_faces = self.face_app.get(image)
-            
+
+            if detected_faces:
+                logger.debug(f"InsightFace: {len(detected_faces)} Gesicht(er) erkannt")
+
             for face in detected_faces:
                 # Face Recognition mit bekannten Gesichtern vergleichen
                 name = "Unknown"
@@ -674,9 +678,13 @@ class AIAnalyzer:
                     },
                     'embedding': face_embedding  # 512-dimensional vector
                 })
-                
+
+                # Debug-Logging für alle erkannten Gesichter
                 if name != "Unknown":
-                    logger.debug(f"✓ Bekanntes Gesicht (GPU): {name} ({confidence:.2f})")
+                    logger.debug(f"✓ Bekanntes Gesicht: {name} (Konfidenz: {confidence:.2f})")
+                else:
+                    bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                    logger.debug(f"○ Unknown Gesicht erkannt (BBox: {bbox[0]},{bbox[1]}-{bbox[2]},{bbox[3]}, Area: {bbox_area:.0f}px²)")
         
         except Exception as e:
             logger.error(f"Fehler bei InsightFace GPU-Detection: {e}")
