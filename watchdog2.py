@@ -953,12 +953,13 @@ class AIAnalyzer:
             # Frontalität für Debug-Logging
             best_frontality = self._calculate_frontality_score(best_face.get('landmarks'))
 
-            # Entferne temporäre Felder, behalte embedding
+            # Entferne temporäre Felder, behalte embedding und frame_number
             best_face_clean = {
                 'name': best_face['name'],
                 'confidence': best_face.get('confidence', 0.0),
                 'bbox': best_face['bbox'],
-                'embedding': best_face.get('embedding')  # Embedding behalten für DB
+                'embedding': best_face.get('embedding'),  # Embedding behalten für DB
+                'frame_number': best_face.get('frame_number', 0)  # Frame-Nummer für GUI
             }
 
             best_faces.append(best_face_clean)
@@ -1280,8 +1281,8 @@ class FileProcessor:
             for face in results.get('faces', []):
                 query = """
                     INSERT INTO cam2_detected_faces
-                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, embedding)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, embedding, frame_number)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = face.get('bbox', {})
 
@@ -1301,7 +1302,8 @@ class FileProcessor:
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
                     bbox.get('y2', 0),
-                    embedding_bytes
+                    embedding_bytes,
+                    face.get('frame_number', 0)  # Frame-Nummer für GUI Frame-Extraktion
                 )
                 cursor.execute(query, values)
             
@@ -1730,6 +1732,7 @@ def create_database_schema():
         bbox_x2 INT,
         bbox_y2 INT,
         embedding BLOB,
+        frame_number INT DEFAULT 0,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_person (person_name),

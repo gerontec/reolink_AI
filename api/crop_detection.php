@@ -43,14 +43,14 @@ $size = min(max($size, 50), 800);
 try {
     if ($type === 'face') {
         $sql = "
-            SELECT f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2, r.file_path
+            SELECT f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2, f.frame_number, r.file_path
             FROM cam2_detected_faces f
             JOIN cam2_recordings r ON f.recording_id = r.id
             WHERE f.id = ?
         ";
     } else {
         $sql = "
-            SELECT o.bbox_x1, o.bbox_y1, o.bbox_x2, o.bbox_y2, r.file_path
+            SELECT o.bbox_x1, o.bbox_y1, o.bbox_x2, o.bbox_y2, 0 as frame_number, r.file_path
             FROM cam2_detected_objects o
             JOIN cam2_recordings r ON o.recording_id = r.id
             WHERE o.id = ? AND o.object_class = 'person'
@@ -79,16 +79,29 @@ try {
         exit;
     }
 
-    // Unterstütze MP4 Videos (extrahiere ersten Frame)
+    // Unterstütze MP4 Videos (extrahiere spezifischen Frame)
     if (preg_match('/\.mp4$/i', $image_path)) {
         $temp_frame = tempnam(sys_get_temp_dir(), 'frame_') . '.jpg';
 
-        // Extrahiere ersten Frame mit ffmpeg
-        $cmd = sprintf(
-            'ffmpeg -i %s -vframes 1 -q:v 2 -f image2 %s 2>&1',
-            escapeshellarg($image_path),
-            escapeshellarg($temp_frame)
-        );
+        // Extrahiere spezifischen Frame (oder ersten Frame wenn frame_number = 0)
+        $frame_number = intval($item['frame_number'] ?? 0);
+
+        if ($frame_number > 0) {
+            // Extrahiere spezifischen Frame (Frame-Nummern beginnen bei 0)
+            $cmd = sprintf(
+                'ffmpeg -i %s -vf "select=eq(n\,%d)" -vframes 1 -q:v 2 -f image2 %s 2>&1',
+                escapeshellarg($image_path),
+                $frame_number,
+                escapeshellarg($temp_frame)
+            );
+        } else {
+            // Fallback: Erster Frame
+            $cmd = sprintf(
+                'ffmpeg -i %s -vframes 1 -q:v 2 -f image2 %s 2>&1',
+                escapeshellarg($image_path),
+                escapeshellarg($temp_frame)
+            );
+        }
 
         exec($cmd, $output, $ret);
 
