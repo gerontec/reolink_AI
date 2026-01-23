@@ -670,6 +670,9 @@ class AIAnalyzer:
                 # Embedding für DB-Speicherung
                 face_embedding = face.embedding
 
+                # Landmarks für Frontalitäts-Score (5 Punkte: linkes Auge, rechtes Auge, Nase, linker Mund, rechter Mund)
+                landmarks = face.kps if hasattr(face, 'kps') else None
+
                 # Konfidenz-Logik:
                 # - Für bekannte Gesichter: Recognition confidence (similarity)
                 # - Für Unknown Gesichter: Detection confidence (wie sicher ist es ein Gesicht?)
@@ -684,7 +687,8 @@ class AIAnalyzer:
                         'x2': int(bbox[2]),
                         'y2': int(bbox[3])
                     },
-                    'embedding': face_embedding  # 512-dimensional vector
+                    'embedding': face_embedding,  # 512-dimensional vector
+                    'landmarks': landmarks.tolist() if landmarks is not None else None  # Für Frontalitäts-Score
                 })
 
                 # Debug-Logging für alle erkannten Gesichter
@@ -798,13 +802,59 @@ class AIAnalyzer:
         
         return results
 
+    def _calculate_frontality_score(self, landmarks: List) -> float:
+        """
+        Berechnet Frontalitäts-Score basierend auf Face Landmarks
+
+        Args:
+            landmarks: 5-Punkt Landmarks [linkes_auge, rechtes_auge, nase, linker_mund, rechter_mund]
+
+        Returns:
+            Score 0.0 - 1.0 (1.0 = perfekt frontal)
+        """
+        if landmarks is None or len(landmarks) != 5:
+            return 0.5  # Default bei fehlenden Landmarks
+
+        try:
+            # Landmarks: [left_eye, right_eye, nose, left_mouth, right_mouth]
+            left_eye = np.array(landmarks[0])
+            right_eye = np.array(landmarks[1])
+            nose = np.array(landmarks[2])
+            left_mouth = np.array(landmarks[3])
+            right_mouth = np.array(landmarks[4])
+
+            # 1. Augen-Symmetrie (horizontale Ausrichtung)
+            eye_diff_y = abs(left_eye[1] - right_eye[1])  # Y-Koordinaten-Differenz
+            eye_distance = np.linalg.norm(left_eye - right_eye)
+            eye_symmetry = 1.0 - min(eye_diff_y / (eye_distance + 1e-6), 1.0)
+
+            # 2. Nasen-Zentrierung (zwischen den Augen)
+            eye_center_x = (left_eye[0] + right_eye[0]) / 2
+            nose_offset = abs(nose[0] - eye_center_x)
+            nose_centering = 1.0 - min(nose_offset / (eye_distance / 2 + 1e-6), 1.0)
+
+            # 3. Mund-Symmetrie (horizontal)
+            mouth_diff_y = abs(left_mouth[1] - right_mouth[1])
+            mouth_distance = np.linalg.norm(left_mouth - right_mouth)
+            mouth_symmetry = 1.0 - min(mouth_diff_y / (mouth_distance + 1e-6), 1.0)
+
+            # Kombinierter Frontalitäts-Score
+            frontality = (0.4 * eye_symmetry + 0.4 * nose_centering + 0.2 * mouth_symmetry)
+
+            return float(np.clip(frontality, 0.0, 1.0))
+
+        except Exception as e:
+            logger.debug(f"Fehler bei Frontalitäts-Berechnung: {e}")
+            return 0.5
+
     def _select_best_faces(self, all_faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Wählt das beste Gesicht pro Person aus allen gesammelten Frames
 
         Kriterien:
         - Bbox-Größe (größer = näher = schärfer)
-        - Konfidenz (bei bekannten Gesichtern)
+        - Konfidenz (Detection/Recognition Qualität)
+        - Frontalität (Gesicht gerade zur Kamera, nicht nach unten/oben)
 
         Returns:
             Liste der besten Gesichter (ein pro eindeutiger Person)
@@ -862,15 +912,20 @@ class AIAnalyzer:
             scored_faces = []
 
             for face in faces:
-                # Score-Berechnung:
-                # 70% Gewicht: Bbox-Größe (größer = besser)
-                # 30% Gewicht: Confidence (bei bekannten Gesichtern)
+                # Score-Berechnung mit drei Faktoren:
+                # 40% Bbox-Größe (größer = näher = schärfer)
+                # 30% Frontalität (gerader Blick zur Kamera)
+                # 30% Confidence (Detection/Recognition Qualität)
 
                 bbox_score = face['bbox_area'] / 10000.0  # Normalisierung (ca. 100x100 = 1.0)
                 conf_score = face.get('confidence', 0.0)
 
+                # Frontalitäts-Score berechnen
+                landmarks = face.get('landmarks')
+                frontality_score = self._calculate_frontality_score(landmarks)
+
                 # Kombinierter Score
-                total_score = (0.7 * bbox_score) + (0.3 * conf_score)
+                total_score = (0.4 * bbox_score) + (0.3 * frontality_score) + (0.3 * conf_score)
 
                 scored_faces.append((total_score, face))
 
@@ -878,17 +933,22 @@ class AIAnalyzer:
             scored_faces.sort(key=lambda x: x[0], reverse=True)
             best_face = scored_faces[0][1]
 
-            # Entferne temporäre Felder
+            # Frontalität für Debug-Logging
+            best_frontality = self._calculate_frontality_score(best_face.get('landmarks'))
+
+            # Entferne temporäre Felder, behalte embedding
             best_face_clean = {
                 'name': best_face['name'],
                 'confidence': best_face.get('confidence', 0.0),
-                'bbox': best_face['bbox']
+                'bbox': best_face['bbox'],
+                'embedding': best_face.get('embedding')  # Embedding behalten für DB
             }
 
             best_faces.append(best_face_clean)
 
             logger.debug(f"Beste Auswahl für '{group_name}': Frame {best_face['frame_number']}, "
-                        f"Größe {best_face['bbox_area']:.0f}px², Konfidenz {best_face.get('confidence', 0):.2f}")
+                        f"Größe {best_face['bbox_area']:.0f}px², Frontalität {best_frontality:.2f}, "
+                        f"Konfidenz {best_face.get('confidence', 0):.2f}")
 
         return best_faces
 
