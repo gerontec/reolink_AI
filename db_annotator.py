@@ -1,4 +1,4 @@
-#!/home/gh/python/venv_py311/bin/python3
+#!/usr/bin/env python3
 """
 DB-Annotator: Erstellt annotierte Bilder basierend auf watchdog2.py Detektionen aus MariaDB
 - Liest neueste Recordings aus cam2_recordings
@@ -37,12 +37,16 @@ COLOR_PERSON = (0, 255, 0)      # Grün
 COLOR_KNOWN_FACE = (0, 255, 255)  # Gelb
 COLOR_UNKNOWN_FACE = (0, 0, 255) # Rot
 
+# Logging-Verzeichnis erstellen
+LOG_DIR = Path('./logs')
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('./logs/db_annotator.log'),
+        logging.FileHandler(LOG_DIR / 'db_annotator.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
