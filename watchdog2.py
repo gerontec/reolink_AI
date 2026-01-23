@@ -777,10 +777,105 @@ class AIAnalyzer:
             logger.error(f"Fehler bei YOLO-Detektion: {e}")
         
         return results
-    
+
+    def _select_best_faces(self, all_faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Wählt das beste Gesicht pro Person aus allen gesammelten Frames
+
+        Kriterien:
+        - Bbox-Größe (größer = näher = schärfer)
+        - Konfidenz (bei bekannten Gesichtern)
+
+        Returns:
+            Liste der besten Gesichter (ein pro eindeutiger Person)
+        """
+        if not all_faces:
+            return []
+
+        # Gruppiere Gesichter nach Person (Name + Bbox-Position für Unknown-Clustering)
+        face_groups = {}
+
+        for face in all_faces:
+            name = face['name']
+
+            # Für "Unknown" clustern wir nach räumlicher Nähe
+            if name == "Unknown":
+                # Nutze Bbox-Center für Clustering
+                bbox = face['bbox']
+                center_x = (bbox['x1'] + bbox['x2']) / 2
+                center_y = (bbox['y1'] + bbox['y2']) / 2
+
+                # Finde ob es bereits einen Unknown in der Nähe gibt (200px Radius)
+                cluster_key = None
+                for existing_key in face_groups.keys():
+                    if existing_key.startswith("Unknown_"):
+                        # Hole erstes Gesicht dieser Gruppe
+                        first_face = face_groups[existing_key][0]
+                        first_bbox = first_face['bbox']
+                        first_center_x = (first_bbox['x1'] + first_bbox['x2']) / 2
+                        first_center_y = (first_bbox['y1'] + first_bbox['y2']) / 2
+
+                        # Prüfe Distanz
+                        dist = np.sqrt((center_x - first_center_x)**2 + (center_y - first_center_y)**2)
+                        if dist < 200:  # 200px Cluster-Radius
+                            cluster_key = existing_key
+                            break
+
+                # Neuer Cluster wenn kein Match
+                if cluster_key is None:
+                    cluster_key = f"Unknown_{len([k for k in face_groups.keys() if k.startswith('Unknown_')])}"
+
+                if cluster_key not in face_groups:
+                    face_groups[cluster_key] = []
+                face_groups[cluster_key].append(face)
+            else:
+                # Bekannte Personen nach Name gruppieren
+                if name not in face_groups:
+                    face_groups[name] = []
+                face_groups[name].append(face)
+
+        # Wähle bestes Gesicht pro Gruppe
+        best_faces = []
+
+        for group_name, faces in face_groups.items():
+            # Berechne Score für jedes Gesicht
+            scored_faces = []
+
+            for face in faces:
+                # Score-Berechnung:
+                # 70% Gewicht: Bbox-Größe (größer = besser)
+                # 30% Gewicht: Confidence (bei bekannten Gesichtern)
+
+                bbox_score = face['bbox_area'] / 10000.0  # Normalisierung (ca. 100x100 = 1.0)
+                conf_score = face.get('confidence', 0.0)
+
+                # Kombinierter Score
+                total_score = (0.7 * bbox_score) + (0.3 * conf_score)
+
+                scored_faces.append((total_score, face))
+
+            # Bestes Gesicht auswählen
+            scored_faces.sort(key=lambda x: x[0], reverse=True)
+            best_face = scored_faces[0][1]
+
+            # Entferne temporäre Felder
+            best_face_clean = {
+                'name': best_face['name'],
+                'confidence': best_face.get('confidence', 0.0),
+                'bbox': best_face['bbox']
+            }
+
+            best_faces.append(best_face_clean)
+
+            logger.debug(f"Beste Auswahl für '{group_name}': Frame {best_face['frame_number']}, "
+                        f"Größe {best_face['bbox_area']:.0f}px², Konfidenz {best_face.get('confidence', 0):.2f}")
+
+        return best_faces
+
     def analyze_video(self, video_path: Path, sample_rate: int = 30) -> Dict[str, Any]:
         """
         Analysiert Video durch Sampling von Frames - Tesla P4 optimiert
+        Mit intelligenter Frame-Selektion für beste Gesichter
         """
         results = {
             'faces': [],
@@ -793,66 +888,73 @@ class AIAnalyzer:
             'analysis_timestamp': datetime.now(),
             'gpu_used': self.device == 'cuda'
         }
-        
+
         try:
             cap = cv2.VideoCapture(str(video_path))
-            
+
             if not cap.isOpened():
                 logger.error(f"Video konnte nicht geöffnet werden: {video_path}")
                 return results
-            
+
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             results['total_frames'] = total_frames
-            
+
             frame_count = 0
             analyzed_count = 0
-            
-            # Sets für eindeutige Detektionen
-            unique_faces = set()
+
+            # Sammle ALLE Gesichter aus ALLEN Frames (für beste Auswahl)
+            all_faces = []  # Liste aller gefundenen Gesichter mit Frame-Info
             unique_objects = set()
             unique_vehicles = set()
-            
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
+
                 frame_count += 1
-                
+
                 # Nur jeden N-ten Frame analysieren
                 if frame_count % sample_rate != 0:
                     continue
-                
+
                 analyzed_count += 1
-                
+
                 # Frame analysieren
                 frame_results = self.analyze_image_array(frame)
-                
-                # Gesichter sammeln
+
+                # Gesichter sammeln (ALLE, mit Frame-Nummer)
                 for face in frame_results['faces']:
-                    if face['name'] != "Unknown":
-                        unique_faces.add(face['name'])
-                
+                    face_copy = face.copy()
+                    face_copy['frame_number'] = frame_count
+                    # Berechne Bbox-Area für Qualitätsbewertung
+                    bbox = face['bbox']
+                    face_copy['bbox_area'] = (bbox['x2'] - bbox['x1']) * (bbox['y2'] - bbox['y1'])
+                    all_faces.append(face_copy)
+
                 # Objekte sammeln
                 for obj in frame_results['objects']:
                     unique_objects.add(obj['class'])
-                
+
                 # Fahrzeuge sammeln
                 for vehicle in frame_results['vehicles']:
                     unique_vehicles.add(vehicle['class'])
-                
+
                 # Max Personen tracken
                 if frame_results['persons'] > results['max_persons']:
                     results['max_persons'] = frame_results['persons']
-                
+
                 if analyzed_count % 10 == 0:
                     logger.debug(f"Video-Analyse: {analyzed_count} Frames analysiert")
-            
+
             cap.release()
-            
+
+            # Wähle beste Gesichter aus (ein pro Person)
+            best_faces = self._select_best_faces(all_faces)
+
             results['analyzed_frames'] = analyzed_count
-            results['faces'] = [{'name': name} for name in unique_faces]
-            results['known_faces_count'] = len(unique_faces)
+            results['faces'] = best_faces
+            results['known_faces_count'] = sum(1 for f in best_faces if f['name'] != 'Unknown')
             results['objects'] = [{'class': obj} for obj in unique_objects]
             results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
 
@@ -860,7 +962,7 @@ class AIAnalyzer:
             results['scene_category'] = self._classify_scene(results)
 
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
-                       f"{len(unique_faces)} bekannte Gesichter, {results['max_persons']} max. Personen, "
+                       f"{results['known_faces_count']} bekannte Gesichter, {results['max_persons']} max. Personen, "
                        f"Szene: {results['scene_category']}")
 
         except Exception as e:
