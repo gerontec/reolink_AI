@@ -49,21 +49,22 @@ def main():
             # Split nach Whitespace
             parts = line_str.split()
 
-            # Prüfe ob genug Felder (mindestens 14: Batterienummer + 13 Datenfelder)
-            if len(parts) >= 14:
+            # Prüfe ob genug Felder (mindestens 13: Batterienummer + 12 Datenfelder)
+            if len(parts) >= 13:
                 # Versuche erste Felder als Zahlen zu parsen (Validierung)
                 try:
                     bat_num = int(parts[0])  # Batterienummer
-                    float(parts[1])  # Power
-                    float(parts[2])  # Volt
+                    float(parts[1])  # Volt
+                    float(parts[2])  # Curr
 
                     # Überspringe "Absent" Batterien
                     if parts[8] == 'Absent':
                         continue
 
-                    # Daten gefunden! Verwende Felder 1-13 (ohne Batterienummer)
-                    data_fields = parts[1:14]
-                    print(f"\n→ Batterie {bat_num}: {' '.join(data_fields)}")
+                    # Daten gefunden! Verwende Felder 0-12 (Batterienummer + 12 Datenfelder)
+                    # Batterienummer wird als "Power" in DB gespeichert
+                    data_fields = parts[0:13]
+                    print(f"\n→ Batterie {bat_num}: Volt={parts[1]}mV, Curr={parts[2]}mA, SOC={parts[12]}")
 
                     result = subprocess.run(
                         [PV_EBOX2_SCRIPT] + data_fields,

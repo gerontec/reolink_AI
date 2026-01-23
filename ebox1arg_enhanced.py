@@ -22,11 +22,13 @@ PV_EBOX2_SCRIPT = '/home/pi/python/pv_ebox2.py'
 
 def parse_data_line(line):
     """
-    Parst eine Datenzeile und extrahiert die 13 Datenfelder (ohne Batterienummer)
+    Parst eine Datenzeile und extrahiert die 13 Felder (Batterienummer + 12 Datenfelder)
 
     Erwartet Format (Beispiel):
     b'1     52923  -3342  19000  15000  16000  3305   3311   Dischg   Normal   Normal   Normal   84%\r\n'
-    (Batterienummer + 13 Datenfelder)
+
+    Die Batterienummer wird als "Power" in der DB gespeichert (historische Kompatibilität).
+    Die ebox-Hardware gibt kein separates "Power"-Feld aus.
 
     Returns:
         Tuple (battery_num, data_fields) oder (None, None) wenn ungültig
@@ -42,21 +44,21 @@ def parse_data_line(line):
         # Split nach Whitespace
         parts = line_str.split()
 
-        # Prüfe ob genug Felder vorhanden (mindestens 14: Batterienummer + 13 Daten)
-        if len(parts) < 14:
+        # Prüfe ob genug Felder vorhanden (mindestens 13: Batterienummer + 12 Datenfelder)
+        if len(parts) < 13:
             return None, None
 
-        # Batterienummer und 13 Datenfelder extrahieren
+        # Batterienummer und 12 Datenfelder extrahieren (Batterienummer = "Power")
         battery_num = int(parts[0])
-        data = parts[1:14]
+        data = parts[0:13]  # Inkl. Batterienummer als erstes Feld
 
         # Überspringe "Absent" Batterien
-        if data[7] == 'Absent':  # BaseSt ist Feld 7 (0-indexed in data)
+        if parts[8] == 'Absent':  # BaseSt ist Feld 8 (absoluter Index)
             return None, None
 
-        # Validierung: Erste Felder sollten numerisch sein
+        # Validierung: Felder sollten numerisch sein
         try:
-            float(data[0])  # Power
+            int(data[0])    # Batterienummer
             float(data[1])  # Volt
             float(data[2])  # Curr
             return battery_num, data
@@ -116,13 +118,13 @@ def save_to_database(data_fields):
     Ruft pv_ebox2.py mit den Datenfeldern auf
 
     Args:
-        data_fields: Liste mit 13 Datenfeldern (ohne Batterienummer)
+        data_fields: Liste mit 13 Feldern (Batterienummer + 12 Datenfelder)
     """
     try:
         # Baue Kommando
         cmd = [PV_EBOX2_SCRIPT] + data_fields
 
-        print(f"  Datenfelder: {' '.join(data_fields[:4])}... SOC={data_fields[12]}")
+        print(f"  Volt={data_fields[1]}mV, Curr={data_fields[2]}mA, SOC={data_fields[12]}")
 
         # Führe Script aus
         result = subprocess.run(

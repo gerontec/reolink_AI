@@ -38,21 +38,22 @@ for line in all_lines:
 
         parts = line_str.split()
 
-        # Prüfe ob mindestens 14 Felder vorhanden (Batterienummer + 13 Daten)
-        if len(parts) >= 14:
+        # Prüfe ob mindestens 13 Felder vorhanden (Batterienummer + 12 Datenfelder)
+        if len(parts) >= 13:
             # Validiere dass Felder numerisch sind
             try:
                 bat_num = int(parts[0])  # Batterienummer
-                float(parts[1])  # Power
-                float(parts[2])  # Volt
+                float(parts[1])  # Volt
+                float(parts[2])  # Curr
 
                 # Überspringe "Absent" Batterien
                 if parts[8] == 'Absent':
                     continue
 
-                # Daten gefunden! Verwende Felder 1-13 (ohne Batterienummer)
-                data_fields = parts[1:14]
-                print(f"\n→ Batterie {bat_num}: {' '.join(data_fields)}")
+                # Daten gefunden! Verwende Felder 0-12 (Batterienummer als "Power" + 12 Datenfelder)
+                # Die Batterienummer wird in DB-Spalte "Power" gespeichert (so war es auch vorher)
+                data_fields = parts[0:13]
+                print(f"\n→ Batterie {bat_num}: Volt={parts[1]}mV, Curr={parts[2]}mA, SOC={parts[12]}")
                 subprocess.run(['/home/pi/python/pv_ebox2.py'] + data_fields, timeout=5)
 
                 # KEIN break hier - verarbeite alle Batterien!
