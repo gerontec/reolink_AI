@@ -636,7 +636,10 @@ class AIAnalyzer:
                 # Face Recognition mit bekannten Gesichtern vergleichen
                 name = "Unknown"
                 confidence = 0.0
-                
+
+                # Detection Score von InsightFace (wie sicher ist es ein Gesicht?)
+                detection_score = float(face.det_score) if hasattr(face, 'det_score') else 0.0
+
                 if self.known_face_encodings:
                     # InsightFace Embedding
                     face_embedding = face.embedding
@@ -667,9 +670,14 @@ class AIAnalyzer:
                 # Embedding für DB-Speicherung
                 face_embedding = face.embedding
 
+                # Konfidenz-Logik:
+                # - Für bekannte Gesichter: Recognition confidence (similarity)
+                # - Für Unknown Gesichter: Detection confidence (wie sicher ist es ein Gesicht?)
+                final_confidence = confidence if name != "Unknown" else detection_score
+
                 faces.append({
                     'name': name,
-                    'confidence': float(confidence) if name != "Unknown" else 0.0,
+                    'confidence': float(final_confidence),
                     'bbox': {
                         'x1': int(bbox[0]),
                         'y1': int(bbox[1]),
@@ -684,7 +692,7 @@ class AIAnalyzer:
                     logger.debug(f"✓ Bekanntes Gesicht: {name} (Konfidenz: {confidence:.2f})")
                 else:
                     bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-                    logger.debug(f"○ Unknown Gesicht erkannt (BBox: {bbox[0]},{bbox[1]}-{bbox[2]},{bbox[3]}, Area: {bbox_area:.0f}px²)")
+                    logger.debug(f"○ Unknown Gesicht erkannt (Detection: {detection_score:.2f}, BBox: {bbox[0]},{bbox[1]}-{bbox[2]},{bbox[3]}, Area: {bbox_area:.0f}px²)")
         
         except Exception as e:
             logger.error(f"Fehler bei InsightFace GPU-Detection: {e}")
