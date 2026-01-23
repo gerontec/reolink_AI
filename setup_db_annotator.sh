@@ -32,10 +32,34 @@ echo "✓ Dependencies OK"
 # 2. Verzeichnisse erstellen
 echo ""
 echo "2. Erstelle Verzeichnisse..."
-mkdir -p /var/www/web1/annotated_from_db
 mkdir -p ./logs
-chown -R gh:gh /var/www/web1/annotated_from_db 2>/dev/null || true
-echo "✓ Verzeichnisse erstellt"
+echo "✓ logs/ erstellt"
+
+# Output-Verzeichnis (braucht eventuell sudo)
+if [ -w /var/www/web1 ]; then
+    mkdir -p /var/www/web1/annotated_from_db
+    echo "✓ /var/www/web1/annotated_from_db erstellt"
+else
+    echo "⚠ Keine Berechtigung für /var/www/web1"
+    echo "  Führe aus: sudo mkdir -p /var/www/web1/annotated_from_db"
+    echo "            sudo chown gh:gh /var/www/web1/annotated_from_db"
+
+    if [ "$EUID" -eq 0 ]; then
+        mkdir -p /var/www/web1/annotated_from_db
+        chown -R gh:gh /var/www/web1/annotated_from_db
+        echo "✓ Verzeichnis als root erstellt und Berechtigungen gesetzt"
+    else
+        read -p "  Jetzt mit sudo erstellen? (j/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Jj]$ ]]; then
+            sudo mkdir -p /var/www/web1/annotated_from_db
+            sudo chown -R gh:gh /var/www/web1/annotated_from_db
+            echo "✓ Verzeichnis erstellt"
+        else
+            echo "⚠ Verzeichnis muss manuell erstellt werden!"
+        fi
+    fi
+fi
 
 # 3. Script ausführbar machen
 echo ""
