@@ -70,7 +70,7 @@ try {
     }
     
     $image_path = '/var/www/web1/' . $item['file_path'];
-    
+
     if (!file_exists($image_path)) {
         error_log("Image file not found: $image_path");
         http_response_code(404);
@@ -78,14 +78,48 @@ try {
         echo "Image file not found: " . $item['file_path'];
         exit;
     }
-    
-    $image = @imagecreatefromjpeg($image_path);
-    if (!$image) {
-        error_log("Cannot load image: $image_path");
-        http_response_code(500);
-        header('Content-Type: text/plain');
-        echo "Cannot load image";
-        exit;
+
+    // Unterstütze MP4 Videos (extrahiere ersten Frame)
+    if (preg_match('/\.mp4$/i', $image_path)) {
+        $temp_frame = tempnam(sys_get_temp_dir(), 'frame_') . '.jpg';
+
+        // Extrahiere ersten Frame mit ffmpeg
+        $cmd = sprintf(
+            'ffmpeg -i %s -vframes 1 -q:v 2 -f image2 %s 2>&1',
+            escapeshellarg($image_path),
+            escapeshellarg($temp_frame)
+        );
+
+        exec($cmd, $output, $ret);
+
+        if ($ret === 0 && file_exists($temp_frame)) {
+            $image = @imagecreatefromjpeg($temp_frame);
+            @unlink($temp_frame);
+
+            if (!$image) {
+                error_log("Cannot load extracted frame: $temp_frame");
+                http_response_code(500);
+                header('Content-Type: text/plain');
+                echo "Cannot load extracted frame";
+                exit;
+            }
+        } else {
+            error_log("ffmpeg frame extraction failed: " . implode("\n", $output));
+            http_response_code(500);
+            header('Content-Type: text/plain');
+            echo "Video frame extraction failed";
+            exit;
+        }
+    } else {
+        // JPEG Image
+        $image = @imagecreatefromjpeg($image_path);
+        if (!$image) {
+            error_log("Cannot load image: $image_path");
+            http_response_code(500);
+            header('Content-Type: text/plain');
+            echo "Cannot load image";
+            exit;
+        }
     }
     
     $img_width = imagesx($image);
