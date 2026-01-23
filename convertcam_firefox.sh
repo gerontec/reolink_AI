@@ -117,8 +117,9 @@ find "$SOURCE_BASE" -regextype posix-extended -regex ".*/[0-9]{4}/[0-9]{2}/.*\.m
     fi
 
     # 4. FFmpeg-Konvertierung mit Firefox-optimierten Einstellungen
-    ffmpeg -hwaccel cuda -hwaccel_output_format cuda -i "$input_file" \
-      -vf "scale_cuda=1920:-2" \
+    # CPU-Dekodierung + GPU-Enkodierung (robuster für HEVC-Inputs)
+    ffmpeg -i "$input_file" \
+      -vf "scale=1920:-2" \
       -c:v h264_nvenc \
       -preset "$PRESET" \
       -profile:v "$PROFILE" \
