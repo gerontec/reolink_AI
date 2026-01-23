@@ -633,12 +633,35 @@ class AIAnalyzer:
                 logger.debug(f"InsightFace: {len(detected_faces)} Gesicht(er) erkannt")
 
             for face in detected_faces:
+                # Detection Score von InsightFace (wie sicher ist es ein Gesicht?)
+                detection_score = float(face.det_score) if hasattr(face, 'det_score') else 0.0
+
+                # Quality Filter: Überspringe unsichere Detektionen
+                MIN_DETECTION_SCORE = 0.70  # 70% Minimum für echte Gesichter
+                if detection_score < MIN_DETECTION_SCORE:
+                    logger.debug(f"✗ Gesicht verworfen (Detection Score zu niedrig: {detection_score:.2f} < {MIN_DETECTION_SCORE})")
+                    continue
+
+                # Bounding Box Validierung
+                bbox = face.bbox.astype(int)
+                bbox_width = bbox[2] - bbox[0]
+                bbox_height = bbox[3] - bbox[1]
+                aspect_ratio = bbox_width / (bbox_height + 1e-6)
+
+                # Gesichter haben typisches Aspect Ratio 0.6 - 1.4 (Breite/Höhe)
+                if aspect_ratio < 0.5 or aspect_ratio > 1.5:
+                    logger.debug(f"✗ Gesicht verworfen (ungültiges Aspect Ratio: {aspect_ratio:.2f})")
+                    continue
+
+                # Landmarks Validierung (5 Punkte müssen vorhanden sein)
+                landmarks = face.kps if hasattr(face, 'kps') else None
+                if landmarks is None or len(landmarks) != 5:
+                    logger.debug(f"✗ Gesicht verworfen (fehlende/ungültige Landmarks)")
+                    continue
+
                 # Face Recognition mit bekannten Gesichtern vergleichen
                 name = "Unknown"
                 confidence = 0.0
-
-                # Detection Score von InsightFace (wie sicher ist es ein Gesicht?)
-                detection_score = float(face.det_score) if hasattr(face, 'det_score') else 0.0
 
                 if self.known_face_encodings:
                     # InsightFace Embedding
@@ -663,15 +686,9 @@ class AIAnalyzer:
                         if best_similarity > 0.4:
                             name = self.known_face_names[best_idx]
                             confidence = float(best_similarity)
-                
-                # Bounding Box
-                bbox = face.bbox.astype(int)
 
                 # Embedding für DB-Speicherung
                 face_embedding = face.embedding
-
-                # Landmarks für Frontalitäts-Score (5 Punkte: linkes Auge, rechtes Auge, Nase, linker Mund, rechter Mund)
-                landmarks = face.kps if hasattr(face, 'kps') else None
 
                 # Konfidenz-Logik:
                 # - Für bekannte Gesichter: Recognition confidence (similarity)
