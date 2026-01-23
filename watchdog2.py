@@ -1211,7 +1211,7 @@ class FileProcessor:
                     embedding_bytes
                 )
                 cursor.execute(query, values)
-            
+
             # Objekte eintragen
             for obj in results.get('objects', []):
                 query = """
@@ -1231,7 +1231,10 @@ class FileProcessor:
                     obj.get('parking_spot_id', None)  # NULL für nicht-Fahrzeuge
                 )
                 cursor.execute(query, values)
-            
+
+            # Parkplatz-Statistiken aktualisieren (für Fahrzeuge)
+            self._update_parking_stats(cursor, recording_id, results)
+
             # Zusammenfassung eintragen
             query = """
                 INSERT INTO cam2_analysis_summary
@@ -1249,10 +1252,66 @@ class FileProcessor:
                 results.get('gpu_used', False)
             )
             cursor.execute(query, values)
-            
+
         except Exception as e:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
+
+    def _update_parking_stats(self, cursor, recording_id: int, results: Dict[str, Any]):
+        """
+        Aktualisiert Parkplatz-Statistiken basierend auf erkannten Fahrzeugen
+
+        Args:
+            cursor: DB Cursor
+            recording_id: Recording ID
+            results: Analyse-Ergebnisse mit vehicles und objects
+        """
+        try:
+            # Hole Timestamp des Recordings
+            query = "SELECT recorded_at FROM cam2_recordings WHERE id = %s"
+            cursor.execute(query, (recording_id,))
+            result = cursor.fetchone()
+
+            if not result:
+                logger.warning(f"Kein Recording gefunden für ID {recording_id}")
+                return
+
+            recorded_at = result[0]
+            date = recorded_at.date()
+            hour = recorded_at.hour
+
+            # Verarbeite alle Fahrzeuge mit parking_spot_id
+            vehicles_processed = 0
+
+            for obj in results.get('objects', []):
+                parking_spot_id = obj.get('parking_spot_id')
+
+                # Nur Fahrzeuge mit gültiger parking_spot_id
+                if parking_spot_id is None:
+                    continue
+
+                vehicle_type = obj.get('class', 'unknown')
+
+                # INSERT ... ON DUPLICATE KEY UPDATE
+                # Erhöht occupancy_count wenn bereits vorhanden
+                query = """
+                    INSERT INTO cam2_parking_stats
+                    (parking_spot_id, date, hour, vehicle_type, occupancy_count)
+                    VALUES (%s, %s, %s, %s, 1)
+                    ON DUPLICATE KEY UPDATE
+                    occupancy_count = occupancy_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """
+
+                cursor.execute(query, (parking_spot_id, date, hour, vehicle_type))
+                vehicles_processed += 1
+
+            if vehicles_processed > 0:
+                logger.debug(f"✓ Parkplatz-Statistiken aktualisiert: {vehicles_processed} Fahrzeuge")
+
+        except Exception as e:
+            logger.error(f"Fehler beim Aktualisieren der Parkplatz-Statistiken: {e}")
+            # Nicht werfen, damit die Hauptanalyse nicht fehlschlägt
 
     def get_face_embedding(self, face_id: int) -> Optional[np.ndarray]:
         """
