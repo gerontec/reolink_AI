@@ -38,13 +38,14 @@ MEDIA_BASE_PATH = "/var/www/web1"
 ANNOTATED_OUTPUT_PATH = "/var/www/web1/annotated"
 FACES_OUTPUT_PATH = "/var/www/web1/faces"
 DB_CONFIG = {
+    'host': 'localhost',  # TCP connection (not Unix socket)
     'database': 'wagodb',
     'user': 'gh',
     'password': 'a12345'
 }
 
 # AI Model paths
-YOLO_MODEL_PATH = "/opt/models/yolov8n.pt"
+YOLO_MODEL_PATH = "/opt/models/yolov8l.pt"  # Large model for better accuracy
 KNOWN_FACES_DIR = "/opt/known_faces"
 
 # Logging Setup
@@ -438,8 +439,8 @@ class AIAnalyzer:
                 providers=[('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
             )
             
-            # det_size für Tesla P4 optimiert (640x640 statt 1280x1280)
-            self.face_app.prepare(ctx_id=0, det_size=(640, 640))
+            # det_size für Tesla P4 optimiert (1280x1280 für 4K-Bilder)
+            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280))
             
             # Provider-Check
             providers = self.face_app.det_model.session.get_providers()
@@ -604,10 +605,13 @@ class AIAnalyzer:
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
-            
+
+            # Szenen-Klassifikation
+            results['scene_category'] = self._classify_scene(results)
+
         except Exception as e:
             logger.error(f"Fehler bei Bildanalyse {image_path}: {e}")
-        
+
         return results
     
     def _detect_faces(self, image: np.ndarray) -> List[Dict[str, Any]]:
@@ -655,7 +659,10 @@ class AIAnalyzer:
                 
                 # Bounding Box
                 bbox = face.bbox.astype(int)
-                
+
+                # Embedding für DB-Speicherung
+                face_embedding = face.embedding
+
                 faces.append({
                     'name': name,
                     'confidence': float(confidence) if name != "Unknown" else 0.0,
@@ -664,7 +671,8 @@ class AIAnalyzer:
                         'y1': int(bbox[1]),
                         'x2': int(bbox[2]),
                         'y2': int(bbox[3])
-                    }
+                    },
+                    'embedding': face_embedding  # 512-dimensional vector
                 })
                 
                 if name != "Unknown":
@@ -676,7 +684,39 @@ class AIAnalyzer:
             logger.debug(traceback.format_exc())
         
         return faces
-    
+
+    def _calculate_parking_spot_id(self, bbox: Dict[str, float], image_width: int = 4512, image_height: int = 2512,
+                                   grid_cols: int = 4, grid_rows: int = 3) -> int:
+        """
+        Berechnet parking_spot_id basierend auf Fahrzeug-Position im Grid
+
+        Args:
+            bbox: Bounding Box mit x1, y1, x2, y2
+            image_width: Bildbreite (Standard: 4K Reolink)
+            image_height: Bildhöhe
+            grid_cols: Anzahl Grid-Spalten (Standard: 4)
+            grid_rows: Anzahl Grid-Zeilen (Standard: 3)
+
+        Returns:
+            parking_spot_id: 1-12 (bei 4x3 Grid)
+        """
+        # Mittelpunkt des Fahrzeugs berechnen
+        center_x = (bbox['x1'] + bbox['x2']) / 2
+        center_y = (bbox['y1'] + bbox['y2']) / 2
+
+        # Grid-Cell berechnen
+        cell_width = image_width / grid_cols
+        cell_height = image_height / grid_rows
+
+        col = min(int(center_x / cell_width), grid_cols - 1)
+        row = min(int(center_y / cell_height), grid_rows - 1)
+
+        # parking_spot_id: 1-basiert, von links nach rechts, oben nach unten
+        # Row 0: IDs 1-4, Row 1: IDs 5-8, Row 2: IDs 9-12
+        parking_spot_id = (row * grid_cols) + col + 1
+
+        return parking_spot_id
+
     def _detect_objects(self, image: np.ndarray) -> Dict[str, Any]:
         """Erkennt Objekte mit YOLO - Tesla P4 optimiert"""
         results = {
@@ -724,18 +764,122 @@ class AIAnalyzer:
                 if class_name == 'person':
                     results['persons'] += 1
                 elif class_name in vehicle_classes:
+                    # Berechne parking_spot_id für Fahrzeuge
+                    image_height, image_width = image.shape[:2]
+                    parking_spot_id = self._calculate_parking_spot_id(
+                        obj_data['bbox'],
+                        image_width,
+                        image_height
+                    )
+                    obj_data['parking_spot_id'] = parking_spot_id
                     results['vehicles'].append(obj_data)
-                
-                logger.debug(f"Objekt erkannt: {class_name} (Konfidenz: {confidence:.2f})")
+                    logger.debug(f"Fahrzeug erkannt: {class_name} (Konfidenz: {confidence:.2f}, Parkplatz: {parking_spot_id})")
+                else:
+                    logger.debug(f"Objekt erkannt: {class_name} (Konfidenz: {confidence:.2f})")
         
         except Exception as e:
             logger.error(f"Fehler bei YOLO-Detektion: {e}")
         
         return results
-    
+
+    def _select_best_faces(self, all_faces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Wählt das beste Gesicht pro Person aus allen gesammelten Frames
+
+        Kriterien:
+        - Bbox-Größe (größer = näher = schärfer)
+        - Konfidenz (bei bekannten Gesichtern)
+
+        Returns:
+            Liste der besten Gesichter (ein pro eindeutiger Person)
+        """
+        if not all_faces:
+            return []
+
+        # Gruppiere Gesichter nach Person (Name + Bbox-Position für Unknown-Clustering)
+        face_groups = {}
+
+        for face in all_faces:
+            name = face['name']
+
+            # Für "Unknown" clustern wir nach räumlicher Nähe
+            if name == "Unknown":
+                # Nutze Bbox-Center für Clustering
+                bbox = face['bbox']
+                center_x = (bbox['x1'] + bbox['x2']) / 2
+                center_y = (bbox['y1'] + bbox['y2']) / 2
+
+                # Finde ob es bereits einen Unknown in der Nähe gibt (200px Radius)
+                cluster_key = None
+                for existing_key in face_groups.keys():
+                    if existing_key.startswith("Unknown_"):
+                        # Hole erstes Gesicht dieser Gruppe
+                        first_face = face_groups[existing_key][0]
+                        first_bbox = first_face['bbox']
+                        first_center_x = (first_bbox['x1'] + first_bbox['x2']) / 2
+                        first_center_y = (first_bbox['y1'] + first_bbox['y2']) / 2
+
+                        # Prüfe Distanz
+                        dist = np.sqrt((center_x - first_center_x)**2 + (center_y - first_center_y)**2)
+                        if dist < 200:  # 200px Cluster-Radius
+                            cluster_key = existing_key
+                            break
+
+                # Neuer Cluster wenn kein Match
+                if cluster_key is None:
+                    cluster_key = f"Unknown_{len([k for k in face_groups.keys() if k.startswith('Unknown_')])}"
+
+                if cluster_key not in face_groups:
+                    face_groups[cluster_key] = []
+                face_groups[cluster_key].append(face)
+            else:
+                # Bekannte Personen nach Name gruppieren
+                if name not in face_groups:
+                    face_groups[name] = []
+                face_groups[name].append(face)
+
+        # Wähle bestes Gesicht pro Gruppe
+        best_faces = []
+
+        for group_name, faces in face_groups.items():
+            # Berechne Score für jedes Gesicht
+            scored_faces = []
+
+            for face in faces:
+                # Score-Berechnung:
+                # 70% Gewicht: Bbox-Größe (größer = besser)
+                # 30% Gewicht: Confidence (bei bekannten Gesichtern)
+
+                bbox_score = face['bbox_area'] / 10000.0  # Normalisierung (ca. 100x100 = 1.0)
+                conf_score = face.get('confidence', 0.0)
+
+                # Kombinierter Score
+                total_score = (0.7 * bbox_score) + (0.3 * conf_score)
+
+                scored_faces.append((total_score, face))
+
+            # Bestes Gesicht auswählen
+            scored_faces.sort(key=lambda x: x[0], reverse=True)
+            best_face = scored_faces[0][1]
+
+            # Entferne temporäre Felder
+            best_face_clean = {
+                'name': best_face['name'],
+                'confidence': best_face.get('confidence', 0.0),
+                'bbox': best_face['bbox']
+            }
+
+            best_faces.append(best_face_clean)
+
+            logger.debug(f"Beste Auswahl für '{group_name}': Frame {best_face['frame_number']}, "
+                        f"Größe {best_face['bbox_area']:.0f}px², Konfidenz {best_face.get('confidence', 0):.2f}")
+
+        return best_faces
+
     def analyze_video(self, video_path: Path, sample_rate: int = 30) -> Dict[str, Any]:
         """
         Analysiert Video durch Sampling von Frames - Tesla P4 optimiert
+        Mit intelligenter Frame-Selektion für beste Gesichter
         """
         results = {
             'faces': [],
@@ -748,77 +892,117 @@ class AIAnalyzer:
             'analysis_timestamp': datetime.now(),
             'gpu_used': self.device == 'cuda'
         }
-        
+
         try:
             cap = cv2.VideoCapture(str(video_path))
-            
+
             if not cap.isOpened():
                 logger.error(f"Video konnte nicht geöffnet werden: {video_path}")
                 return results
-            
+
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             results['total_frames'] = total_frames
-            
+
             frame_count = 0
             analyzed_count = 0
-            
-            # Sets für eindeutige Detektionen
-            unique_faces = set()
+
+            # Sammle ALLE Gesichter aus ALLEN Frames (für beste Auswahl)
+            all_faces = []  # Liste aller gefundenen Gesichter mit Frame-Info
             unique_objects = set()
             unique_vehicles = set()
-            
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
+
                 frame_count += 1
-                
+
                 # Nur jeden N-ten Frame analysieren
                 if frame_count % sample_rate != 0:
                     continue
-                
+
                 analyzed_count += 1
-                
+
                 # Frame analysieren
                 frame_results = self.analyze_image_array(frame)
-                
-                # Gesichter sammeln
+
+                # Gesichter sammeln (ALLE, mit Frame-Nummer)
                 for face in frame_results['faces']:
-                    if face['name'] != "Unknown":
-                        unique_faces.add(face['name'])
-                
+                    face_copy = face.copy()
+                    face_copy['frame_number'] = frame_count
+                    # Berechne Bbox-Area für Qualitätsbewertung
+                    bbox = face['bbox']
+                    face_copy['bbox_area'] = (bbox['x2'] - bbox['x1']) * (bbox['y2'] - bbox['y1'])
+                    all_faces.append(face_copy)
+
                 # Objekte sammeln
                 for obj in frame_results['objects']:
                     unique_objects.add(obj['class'])
-                
+
                 # Fahrzeuge sammeln
                 for vehicle in frame_results['vehicles']:
                     unique_vehicles.add(vehicle['class'])
-                
+
                 # Max Personen tracken
                 if frame_results['persons'] > results['max_persons']:
                     results['max_persons'] = frame_results['persons']
-                
+
                 if analyzed_count % 10 == 0:
                     logger.debug(f"Video-Analyse: {analyzed_count} Frames analysiert")
-            
+
             cap.release()
-            
+
+            # Wähle beste Gesichter aus (ein pro Person)
+            best_faces = self._select_best_faces(all_faces)
+
             results['analyzed_frames'] = analyzed_count
-            results['faces'] = [{'name': name} for name in unique_faces]
-            results['known_faces_count'] = len(unique_faces)
+            results['faces'] = best_faces
+            results['known_faces_count'] = sum(1 for f in best_faces if f['name'] != 'Unknown')
             results['objects'] = [{'class': obj} for obj in unique_objects]
             results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
-            
+
+            # Szenen-Klassifikation basierend auf Video-Analyse
+            results['scene_category'] = self._classify_scene(results)
+
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
-                       f"{len(unique_faces)} bekannte Gesichter, {results['max_persons']} max. Personen")
-        
+                       f"{results['known_faces_count']} bekannte Gesichter, {results['max_persons']} max. Personen, "
+                       f"Szene: {results['scene_category']}")
+
         except Exception as e:
             logger.error(f"Fehler bei Video-Analyse {video_path}: {e}")
-        
+
         return results
-    
+
+    def _classify_scene(self, results: Dict[str, Any]) -> str:
+        """
+        Klassifiziert die Szene basierend auf erkannten Objekten
+        Kategorien: parking, street, entrance, indoor, empty
+        """
+        vehicles = results.get('vehicles', [])
+        persons = results.get('persons', 0)
+        objects = results.get('objects', [])
+
+        # Zähle Objekt-Typen
+        num_vehicles = len(vehicles)
+        num_persons = persons
+
+        # Klassifikationslogik
+        if num_vehicles >= 2 and num_persons == 0:
+            return 'parking'  # Mehrere Fahrzeuge, keine Personen = Parkplatz
+        elif num_vehicles >= 1 and num_persons >= 1:
+            return 'street'  # Fahrzeuge + Personen = Straßenszene
+        elif num_persons >= 2 and num_vehicles == 0:
+            return 'entrance'  # Mehrere Personen ohne Fahrzeuge = Eingangsbereich
+        elif num_persons == 1 and num_vehicles == 0:
+            return 'visitor'  # Eine Person = Besucher
+        elif num_vehicles == 1 and num_persons == 0:
+            return 'delivery'  # Ein Fahrzeug alleine = Lieferung/Anlieferung
+        elif len(objects) == 0:
+            return 'empty'  # Keine Objekte = leere Szene
+        else:
+            return 'unknown'  # Alles andere
+
     def analyze_image_array(self, image: np.ndarray) -> Dict[str, Any]:
         """Analysiert Bild als numpy array (für Video-Frames)"""
         results = {
@@ -840,7 +1024,10 @@ class AIAnalyzer:
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
-        
+
+            # Szenen-Klassifikation
+            results['scene_category'] = self._classify_scene(results)
+
         except Exception as e:
             logger.error(f"Fehler bei Array-Analyse: {e}")
         
@@ -999,11 +1186,20 @@ class FileProcessor:
             # Gesichter eintragen
             for face in results.get('faces', []):
                 query = """
-                    INSERT INTO cam2_detected_faces 
-                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO cam2_detected_faces
+                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = face.get('bbox', {})
+
+                # Face Embedding als Binary speichern (512-dim float32 = 2KB)
+                embedding_bytes = None
+                if 'embedding' in face and face['embedding'] is not None:
+                    try:
+                        embedding_bytes = face['embedding'].tobytes()
+                    except Exception as e:
+                        logger.warning(f"Fehler beim Konvertieren des Embeddings: {e}")
+
                 values = (
                     recording_id,
                     face.get('name', 'Unknown'),
@@ -1011,16 +1207,17 @@ class FileProcessor:
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
-                    bbox.get('y2', 0)
+                    bbox.get('y2', 0),
+                    embedding_bytes
                 )
                 cursor.execute(query, values)
             
             # Objekte eintragen
             for obj in results.get('objects', []):
                 query = """
-                    INSERT INTO cam2_detected_objects 
-                    (recording_id, object_class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO cam2_detected_objects
+                    (recording_id, object_class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, parking_spot_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = obj.get('bbox', {})
                 values = (
@@ -1030,16 +1227,17 @@ class FileProcessor:
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
-                    bbox.get('y2', 0)
+                    bbox.get('y2', 0),
+                    obj.get('parking_spot_id', None)  # NULL für nicht-Fahrzeuge
                 )
                 cursor.execute(query, values)
             
             # Zusammenfassung eintragen
             query = """
-                INSERT INTO cam2_analysis_summary 
-                (recording_id, total_faces, total_objects, total_vehicles, 
-                 max_persons, gpu_used, analyzed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                INSERT INTO cam2_analysis_summary
+                (recording_id, total_faces, total_objects, total_vehicles,
+                 max_persons, scene_category, gpu_used, analyzed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
             """
             values = (
                 recording_id,
@@ -1047,6 +1245,7 @@ class FileProcessor:
                 len(results.get('objects', [])),
                 len(results.get('vehicles', [])),
                 results.get('max_persons', results.get('persons', 0)),
+                results.get('scene_category', 'unknown'),
                 results.get('gpu_used', False)
             )
             cursor.execute(query, values)
@@ -1054,7 +1253,164 @@ class FileProcessor:
         except Exception as e:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
-    
+
+    def get_face_embedding(self, face_id: int) -> Optional[np.ndarray]:
+        """
+        Lädt Face Embedding aus der Datenbank
+
+        Returns:
+            512-dim numpy array oder None wenn kein Embedding vorhanden
+        """
+        try:
+            cursor = self.db_connection.cursor()
+            query = "SELECT embedding FROM cam2_detected_faces WHERE id = %s"
+            cursor.execute(query, (face_id,))
+            result = cursor.fetchone()
+            cursor.close()
+
+            if result and result[0]:
+                # BLOB zurück zu numpy array konvertieren
+                embedding = np.frombuffer(result[0], dtype=np.float32)
+                if len(embedding) == 512:
+                    return embedding
+                else:
+                    logger.warning(f"Ungültige Embedding-Größe für face_id {face_id}: {len(embedding)}")
+                    return None
+            return None
+
+        except Exception as e:
+            logger.error(f"Fehler beim Laden des Embeddings für face_id {face_id}: {e}")
+            return None
+
+    def calculate_cosine_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+        """
+        Berechnet Cosine Similarity zwischen zwei Embeddings
+
+        Returns:
+            Float zwischen 0.0 und 1.0 (1.0 = identisch)
+        """
+        # Normalisiere Vektoren
+        norm1 = np.linalg.norm(embedding1)
+        norm2 = np.linalg.norm(embedding2)
+
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        # Cosine Similarity
+        similarity = np.dot(embedding1, embedding2) / (norm1 * norm2)
+
+        # Clamp auf [0, 1]
+        return float(max(0.0, min(1.0, similarity)))
+
+    def find_similar_faces(self, face_id: int, threshold: float = 0.6, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Findet ähnliche Gesichter basierend auf Embedding Similarity
+
+        Args:
+            face_id: ID des Referenz-Gesichts
+            threshold: Minimum Cosine Similarity (0.6 = gute Balance)
+            limit: Maximale Anzahl Ergebnisse
+
+        Returns:
+            Liste von Dicts mit face_id, similarity, person_name, recording_id
+        """
+        # Lade Referenz-Embedding
+        ref_embedding = self.get_face_embedding(face_id)
+        if ref_embedding is None:
+            logger.warning(f"Kein Embedding für face_id {face_id}")
+            return []
+
+        try:
+            cursor = self.db_connection.cursor(pymysql.cursors.DictCursor)
+
+            # Lade alle Gesichter mit Embeddings (außer das Referenz-Gesicht selbst)
+            query = """
+                SELECT id, person_name, confidence, recording_id, embedding
+                FROM cam2_detected_faces
+                WHERE id != %s AND embedding IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1000
+            """
+            cursor.execute(query, (face_id,))
+            faces = cursor.fetchall()
+            cursor.close()
+
+            # Berechne Similarities
+            results = []
+            for face in faces:
+                if face['embedding']:
+                    embedding = np.frombuffer(face['embedding'], dtype=np.float32)
+                    if len(embedding) == 512:
+                        similarity = self.calculate_cosine_similarity(ref_embedding, embedding)
+
+                        if similarity >= threshold:
+                            results.append({
+                                'face_id': face['id'],
+                                'similarity': similarity,
+                                'person_name': face['person_name'],
+                                'confidence': face['confidence'],
+                                'recording_id': face['recording_id']
+                            })
+
+            # Sortiere nach Similarity (beste zuerst)
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+
+            return results[:limit]
+
+        except Exception as e:
+            logger.error(f"Fehler bei Similarity-Suche: {e}")
+            return []
+
+    def bulk_label_similar_faces(self, face_id: int, new_name: str, threshold: float = 0.65,
+                                 dry_run: bool = True) -> Dict[str, Any]:
+        """
+        Benennt alle ähnlichen Gesichter um (Bulk-Labeling)
+
+        Args:
+            face_id: Referenz-Gesicht
+            new_name: Neuer Name für alle ähnlichen Gesichter
+            threshold: Similarity-Schwellwert (0.65 = konservativ)
+            dry_run: Wenn True, nur Simulation ohne DB-Update
+
+        Returns:
+            Dict mit 'count', 'face_ids', 'dry_run' Status
+        """
+        similar_faces = self.find_similar_faces(face_id, threshold=threshold, limit=1000)
+
+        if not similar_faces:
+            logger.info(f"Keine ähnlichen Gesichter gefunden (threshold={threshold})")
+            return {'count': 0, 'face_ids': [], 'dry_run': dry_run}
+
+        face_ids = [f['face_id'] for f in similar_faces]
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Würde {len(face_ids)} Gesichter umbenennen zu '{new_name}'")
+            return {'count': len(face_ids), 'face_ids': face_ids, 'dry_run': True}
+
+        # Echtes Update
+        try:
+            cursor = self.db_connection.cursor()
+
+            # Batch-Update
+            placeholders = ', '.join(['%s'] * len(face_ids))
+            query = f"""
+                UPDATE cam2_detected_faces
+                SET person_name = %s
+                WHERE id IN ({placeholders})
+            """
+
+            cursor.execute(query, [new_name] + face_ids)
+            self.db_connection.commit()
+            cursor.close()
+
+            logger.info(f"✓ {len(face_ids)} Gesichter umbenannt zu '{new_name}'")
+            return {'count': len(face_ids), 'face_ids': face_ids, 'dry_run': False}
+
+        except Exception as e:
+            logger.error(f"Fehler beim Bulk-Labeling: {e}")
+            self.db_connection.rollback()
+            return {'count': 0, 'face_ids': [], 'dry_run': False, 'error': str(e)}
+
     def find_all_media_files(self) -> List[Path]:
         """Findet alle Mediendateien rekursiv"""
         media_files = []
@@ -1062,8 +1418,8 @@ class FileProcessor:
         for ext in ['*.mp4', '*.jpg']:
             media_files.extend(self.base_path.rglob(ext))
         
-        # Nach Datum sortieren (älteste zuerst)
-        media_files.sort(key=lambda p: p.stat().st_mtime)
+        # Nach Datum sortieren (neueste zuerst)
+        media_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         
         logger.info(f"Gefunden: {len(media_files)} Mediendateien")
         return media_files
@@ -1133,7 +1489,7 @@ class FileProcessor:
                     
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
-                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=30)
+                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=1)
                     
                     # In DB eintragen
                     recording_id = self.insert_file_to_db(
@@ -1271,6 +1627,7 @@ def create_database_schema():
         bbox_y1 INT,
         bbox_x2 INT,
         bbox_y2 INT,
+        embedding BLOB,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_person (person_name),
@@ -1286,12 +1643,14 @@ def create_database_schema():
         bbox_y1 INT,
         bbox_x2 INT,
         bbox_y2 INT,
+        parking_spot_id INT DEFAULT NULL,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_class (object_class),
-        INDEX idx_recording (recording_id)
+        INDEX idx_recording (recording_id),
+        INDEX idx_parking_spot (parking_spot_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    
+
     CREATE TABLE IF NOT EXISTS cam2_analysis_summary (
         id INT AUTO_INCREMENT PRIMARY KEY,
         recording_id INT NOT NULL UNIQUE,
@@ -1299,10 +1658,26 @@ def create_database_schema():
         total_objects INT DEFAULT 0,
         total_vehicles INT DEFAULT 0,
         max_persons INT DEFAULT 0,
+        scene_category VARCHAR(50) DEFAULT 'unknown',
         gpu_used BOOLEAN DEFAULT FALSE,
         analyzed_at DATETIME NOT NULL,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
-        INDEX idx_recording (recording_id)
+        INDEX idx_recording (recording_id),
+        INDEX idx_scene (scene_category)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    CREATE TABLE IF NOT EXISTS cam2_parking_stats (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        parking_spot_id INT NOT NULL,
+        date DATE NOT NULL,
+        hour INT NOT NULL,
+        occupancy_count INT DEFAULT 0,
+        vehicle_type VARCHAR(50),
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_spot_time (parking_spot_id, date, hour, vehicle_type),
+        INDEX idx_spot (parking_spot_id),
+        INDEX idx_date (date),
+        INDEX idx_spot_date (parking_spot_id, date)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
     
