@@ -1,0 +1,23 @@
+[Unit]
+Description=Reolink Snapshot Annotator - YOLO Object Detection
+After=network.target
+
+[Service]
+Type=simple
+User=gh
+WorkingDirectory=/home/gh/python/reolink_AI
+ExecStart=/home/gh/python/reolink_AI/snapshot_annotator.py --interval 60
+Restart=always
+RestartSec=10
+
+# Umgebungsvariablen für GPU
+Environment="CUDA_VISIBLE_DEVICES=0"
+Environment="ORT_DISABLE_CUDNN_FRONTEND=1"
+Environment="CUDA_MODULE_LOADING=LAZY"
+
+# Logging
+StandardOutput=append:/var/log/snapshot-annotator.log
+StandardError=append:/var/log/snapshot-annotator.log
+
+[Install]
+WantedBy=multi-user.target
