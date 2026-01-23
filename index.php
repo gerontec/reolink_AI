@@ -181,8 +181,6 @@ $named = $pdo->query("
     }
 
     async function deleteFace(faceId) {
-        if (!confirm('Möchtest du dieses Gesicht wirklich löschen?')) return;
-
         try {
             const response = await fetch('api/delete_faces.php', {
                 method: 'POST',

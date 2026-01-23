@@ -7,7 +7,7 @@ header('Content-Type: application/json');
 
 // Database Configuration
 $db_config = [
-    'host' => '192.168.178.218',
+    'host' => 'localhost',
     'database' => 'wagodb',
     'user' => 'gh',
     'password' => 'a12345',
