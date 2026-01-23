@@ -62,7 +62,7 @@ try {
     $pdo->beginTransaction();
     
     // Delete durchführen
-    $sql = "DELETE FROM cam_detected_faces WHERE id IN ($placeholders)";
+    $sql = "DELETE FROM cam2_detected_faces WHERE id IN ($placeholders)";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($face_ids);
     

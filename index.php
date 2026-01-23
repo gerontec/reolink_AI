@@ -90,6 +90,8 @@ $named = $pdo->query("
         .person-quick-card img { width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
         .stats .unknown { border-bottom: 4px solid #f44336; }
         .stats .known { border-bottom: 4px solid #4caf50; }
+        .btn-danger { background-color: #dc3545; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; margin-left: 5px; }
+        .btn-danger:hover { background-color: #c82333; }
     </style>
 </head>
 <body>
@@ -142,11 +144,12 @@ $named = $pdo->query("
                         </div>
 
                         <div class="person-quick-actions">
-                            <input type="text" id="name_<?= $person['id'] ?>" 
-                                   placeholder="Name..." 
+                            <input type="text" id="name_<?= $person['id'] ?>"
+                                   placeholder="Name..."
                                    list="nameSuggestions"
                                    onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
                             <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
+                            <button class="btn btn-danger" onclick="deleteFace(<?= $person['id'] ?>)" title="Gesicht löschen">🗑️ Löschen</button>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -164,7 +167,7 @@ $named = $pdo->query("
     async function renamePerson(faceId) {
         const name = document.getElementById('name_' + faceId).value.trim();
         if (!name) return;
-        
+
         try {
             const response = await fetch('api/rename_person.php', {
                 method: 'POST',
@@ -175,6 +178,26 @@ $named = $pdo->query("
             if (result.success) location.reload();
             else alert(result.error);
         } catch (e) { alert(e); }
+    }
+
+    async function deleteFace(faceId) {
+        if (!confirm('Möchtest du dieses Gesicht wirklich löschen?')) return;
+
+        try {
+            const response = await fetch('api/delete_faces.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: [faceId] })
+            });
+            const result = await response.json();
+            if (result.success) {
+                location.reload();
+            } else {
+                alert('Fehler beim Löschen: ' + result.error);
+            }
+        } catch (e) {
+            alert('Fehler beim Löschen: ' + e);
+        }
     }
     </script>
 </body>
