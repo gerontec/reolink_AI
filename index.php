@@ -34,11 +34,15 @@ $stats = [
     'total_recordings' => $pdo->query("SELECT COUNT(*) FROM cam2_recordings")->fetchColumn(),
 ];
 
+// Version
+define('APP_VERSION', 'v1.2.0');
+define('DEPLOY_DATE', '2026-01-23');
+
 // Filter
 $show_all = isset($_GET['all']);
-$min_confidence = floatval($_GET['min_conf'] ?? 0.4); // Standard etwas höher für Gesichter
-$min_size = intval($_GET['min_size'] ?? 40);       // Gesichter sind oft kleiner als ganze Körper
-$limit = intval($_GET['limit'] ?? 5);
+$min_confidence = floatval($_GET['min_conf'] ?? 0.0); // Alle Gesichter zeigen
+$min_size = intval($_GET['min_size'] ?? 0);       // Keine Größenbeschränkung
+$limit = intval($_GET['limit'] ?? 20);
 
 // --- Personen/Gesichter abrufen (5 neueste mit hoher Qualität) ---
 $sql = "
@@ -97,7 +101,10 @@ $named = $pdo->query("
 <body>
     <div class="container">
         <header>
-            <h1>👤 CAM2 Admin - Gesichter zuordnen (5 neueste)</h1>
+            <h1>👤 CAM2 Admin - Gesichter zuordnen</h1>
+            <div style="font-size: 0.8em; color: #666; margin-bottom: 10px;">
+                Version: <?= APP_VERSION ?> | Deploy: <?= DEPLOY_DATE ?>
+            </div>
             <div class="stats">
                 <div class="stat-box">
                     <span class="stat-value"><?= number_format($stats['total_persons']) ?></span>
