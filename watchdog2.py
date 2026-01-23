@@ -679,7 +679,39 @@ class AIAnalyzer:
             logger.debug(traceback.format_exc())
         
         return faces
-    
+
+    def _calculate_parking_spot_id(self, bbox: Dict[str, float], image_width: int = 4512, image_height: int = 2512,
+                                   grid_cols: int = 4, grid_rows: int = 3) -> int:
+        """
+        Berechnet parking_spot_id basierend auf Fahrzeug-Position im Grid
+
+        Args:
+            bbox: Bounding Box mit x1, y1, x2, y2
+            image_width: Bildbreite (Standard: 4K Reolink)
+            image_height: Bildhöhe
+            grid_cols: Anzahl Grid-Spalten (Standard: 4)
+            grid_rows: Anzahl Grid-Zeilen (Standard: 3)
+
+        Returns:
+            parking_spot_id: 1-12 (bei 4x3 Grid)
+        """
+        # Mittelpunkt des Fahrzeugs berechnen
+        center_x = (bbox['x1'] + bbox['x2']) / 2
+        center_y = (bbox['y1'] + bbox['y2']) / 2
+
+        # Grid-Cell berechnen
+        cell_width = image_width / grid_cols
+        cell_height = image_height / grid_rows
+
+        col = min(int(center_x / cell_width), grid_cols - 1)
+        row = min(int(center_y / cell_height), grid_rows - 1)
+
+        # parking_spot_id: 1-basiert, von links nach rechts, oben nach unten
+        # Row 0: IDs 1-4, Row 1: IDs 5-8, Row 2: IDs 9-12
+        parking_spot_id = (row * grid_cols) + col + 1
+
+        return parking_spot_id
+
     def _detect_objects(self, image: np.ndarray) -> Dict[str, Any]:
         """Erkennt Objekte mit YOLO - Tesla P4 optimiert"""
         results = {
@@ -727,9 +759,18 @@ class AIAnalyzer:
                 if class_name == 'person':
                     results['persons'] += 1
                 elif class_name in vehicle_classes:
+                    # Berechne parking_spot_id für Fahrzeuge
+                    image_height, image_width = image.shape[:2]
+                    parking_spot_id = self._calculate_parking_spot_id(
+                        obj_data['bbox'],
+                        image_width,
+                        image_height
+                    )
+                    obj_data['parking_spot_id'] = parking_spot_id
                     results['vehicles'].append(obj_data)
-                
-                logger.debug(f"Objekt erkannt: {class_name} (Konfidenz: {confidence:.2f})")
+                    logger.debug(f"Fahrzeug erkannt: {class_name} (Konfidenz: {confidence:.2f}, Parkplatz: {parking_spot_id})")
+                else:
+                    logger.debug(f"Objekt erkannt: {class_name} (Konfidenz: {confidence:.2f})")
         
         except Exception as e:
             logger.error(f"Fehler bei YOLO-Detektion: {e}")
@@ -1057,9 +1098,9 @@ class FileProcessor:
             # Objekte eintragen
             for obj in results.get('objects', []):
                 query = """
-                    INSERT INTO cam2_detected_objects 
-                    (recording_id, object_class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO cam2_detected_objects
+                    (recording_id, object_class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, parking_spot_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = obj.get('bbox', {})
                 values = (
@@ -1069,7 +1110,8 @@ class FileProcessor:
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
-                    bbox.get('y2', 0)
+                    bbox.get('y2', 0),
+                    obj.get('parking_spot_id', None)  # NULL für nicht-Fahrzeuge
                 )
                 cursor.execute(query, values)
             
@@ -1326,12 +1368,14 @@ def create_database_schema():
         bbox_y1 INT,
         bbox_x2 INT,
         bbox_y2 INT,
+        parking_spot_id INT DEFAULT NULL,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_class (object_class),
-        INDEX idx_recording (recording_id)
+        INDEX idx_recording (recording_id),
+        INDEX idx_parking_spot (parking_spot_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    
+
     CREATE TABLE IF NOT EXISTS cam2_analysis_summary (
         id INT AUTO_INCREMENT PRIMARY KEY,
         recording_id INT NOT NULL UNIQUE,
@@ -1345,6 +1389,20 @@ def create_database_schema():
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_recording (recording_id),
         INDEX idx_scene (scene_category)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    CREATE TABLE IF NOT EXISTS cam2_parking_stats (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        parking_spot_id INT NOT NULL,
+        date DATE NOT NULL,
+        hour INT NOT NULL,
+        occupancy_count INT DEFAULT 0,
+        vehicle_type VARCHAR(50),
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_spot_time (parking_spot_id, date, hour, vehicle_type),
+        INDEX idx_spot (parking_spot_id),
+        INDEX idx_date (date),
+        INDEX idx_spot_date (parking_spot_id, date)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
     
