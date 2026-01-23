@@ -149,7 +149,9 @@ $named = $pdo->query("
                                    list="nameSuggestions"
                                    onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
                             <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
-                            <button class="btn btn-danger" onclick="deleteFace(<?= $person['id'] ?>)" title="Gesicht löschen">🗑️ Löschen</button>
+                            <?php if ($person['person_name'] === 'Unknown'): ?>
+                                <button class="btn btn-danger" onclick="deleteFace(<?= $person['id'] ?>)" title="Gesicht löschen">🗑️ Löschen</button>
+                            <?php endif; ?>
                         </div>
                     </div>
                 <?php endforeach; ?>
