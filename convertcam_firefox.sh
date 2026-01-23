@@ -17,9 +17,29 @@ PRESET="p4"             # NVENC Preset (p1-p7, p4 = balanced)
 echo "================================================"
 echo "Video-Konverter für Firefox-Kompatibilität"
 echo "Quelle: $SOURCE_BASE"
-echo "Ziel: ${SOURCE_BASE}/${YEAR}${TARGET_SUFFIX}/"
+echo "Ziel: ${SOURCE_BASE}/*${TARGET_SUFFIX}/"
 echo "Profile: H.264 $PROFILE, Level $LEVEL"
 echo "================================================"
+
+# Berechtigungs-Check
+if [ ! -w "$SOURCE_BASE" ]; then
+    echo ""
+    echo "⚠ WARNUNG: Keine Schreibrechte für $SOURCE_BASE"
+    echo ""
+    if [ "$EUID" -ne 0 ]; then
+        echo "Optionen:"
+        echo "  1. Mit sudo ausführen: sudo $0"
+        echo "  2. Berechtigungen fixen: sudo chown -R $USER:www-data $SOURCE_BASE"
+        echo ""
+        read -p "Mit sudo-Rechten fortfahren? (j/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Jj]$ ]]; then
+            echo "Abgebrochen."
+            exit 1
+        fi
+    fi
+fi
+
 echo ""
 
 # Zähler
@@ -61,15 +81,38 @@ find "$SOURCE_BASE" -regextype posix-extended -regex ".*/[0-9]{4}/[0-9]{2}/.*\.m
     echo "  Quelle: $input_file"
     echo "  Ziel: $TARGET_FILE"
 
-    # 3. Zielordner erstellen
+    # 3. Zielordner erstellen (mit sudo falls nötig)
     if [ ! -d "$TARGET_DIR" ]; then
         echo "  Erstelle: $TARGET_DIR"
+
+        # Versuche normal zu erstellen
         mkdir -p "$TARGET_DIR" 2>/dev/null
 
-        if [ $? -ne 0 ]; then
-            echo "✗ FEHLER: Ordner konnte nicht erstellt werden (Rechte?)"
+        # Falls fehlgeschlagen, versuche mit sudo
+        if [ $? -ne 0 ] && [ "$EUID" -ne 0 ]; then
+            echo "  → Keine Berechtigung, verwende sudo..."
+            sudo mkdir -p "$TARGET_DIR"
+            sudo chown $USER:www-data "$TARGET_DIR"
+            sudo chmod 775 "$TARGET_DIR"
+        fi
+
+        # Erneut prüfen
+        if [ ! -d "$TARGET_DIR" ]; then
+            echo "✗ FEHLER: Ordner konnte nicht erstellt werden"
             ERRORS=$((ERRORS + 1))
             continue
+        fi
+    fi
+
+    # 3b. Prüfe Schreibrechte im Zielordner
+    if [ ! -w "$TARGET_DIR" ]; then
+        echo "  → Keine Schreibrechte, fixe Berechtigungen..."
+        if [ "$EUID" -ne 0 ]; then
+            sudo chown $USER:www-data "$TARGET_DIR"
+            sudo chmod 775 "$TARGET_DIR"
+        else
+            chown web1:www-data "$TARGET_DIR"
+            chmod 775 "$TARGET_DIR"
         fi
     fi
 
@@ -95,8 +138,12 @@ find "$SOURCE_BASE" -regextype posix-extended -regex ".*/[0-9]{4}/[0-9]{2}/.*\.m
 
     # 5. Prüfen und Rechte setzen
     if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
-        # Rechte setzen
-        chown web1:www-data "$TARGET_FILE" 2>/dev/null
+        # Rechte setzen (mit aktuellem User oder web1)
+        if [ "$EUID" -eq 0 ]; then
+            chown web1:www-data "$TARGET_FILE" 2>/dev/null
+        else
+            chown $USER:www-data "$TARGET_FILE" 2>/dev/null || sudo chown $USER:www-data "$TARGET_FILE" 2>/dev/null
+        fi
         chmod 644 "$TARGET_FILE" 2>/dev/null
 
         # Dateigröße prüfen
