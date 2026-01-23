@@ -1,0 +1,18 @@
+[Unit]
+Description=DB-Annotator - Creates annotated images from watchdog2.py detections
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=gh
+WorkingDirectory=/home/gh/python/reolink_AI
+ExecStart=/home/gh/python/reolink_AI/db_annotator.py --interval 60
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/var/log/db-annotator.log
+StandardError=append:/var/log/db-annotator.log
+
+[Install]
+WantedBy=multi-user.target
