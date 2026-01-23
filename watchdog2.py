@@ -659,7 +659,10 @@ class AIAnalyzer:
                 
                 # Bounding Box
                 bbox = face.bbox.astype(int)
-                
+
+                # Embedding für DB-Speicherung
+                face_embedding = face.embedding
+
                 faces.append({
                     'name': name,
                     'confidence': float(confidence) if name != "Unknown" else 0.0,
@@ -668,7 +671,8 @@ class AIAnalyzer:
                         'y1': int(bbox[1]),
                         'x2': int(bbox[2]),
                         'y2': int(bbox[3])
-                    }
+                    },
+                    'embedding': face_embedding  # 512-dimensional vector
                 })
                 
                 if name != "Unknown":
@@ -1182,11 +1186,20 @@ class FileProcessor:
             # Gesichter eintragen
             for face in results.get('faces', []):
                 query = """
-                    INSERT INTO cam2_detected_faces 
-                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO cam2_detected_faces
+                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = face.get('bbox', {})
+
+                # Face Embedding als Binary speichern (512-dim float32 = 2KB)
+                embedding_bytes = None
+                if 'embedding' in face and face['embedding'] is not None:
+                    try:
+                        embedding_bytes = face['embedding'].tobytes()
+                    except Exception as e:
+                        logger.warning(f"Fehler beim Konvertieren des Embeddings: {e}")
+
                 values = (
                     recording_id,
                     face.get('name', 'Unknown'),
@@ -1194,7 +1207,8 @@ class FileProcessor:
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
-                    bbox.get('y2', 0)
+                    bbox.get('y2', 0),
+                    embedding_bytes
                 )
                 cursor.execute(query, values)
             
@@ -1239,7 +1253,164 @@ class FileProcessor:
         except Exception as e:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
-    
+
+    def get_face_embedding(self, face_id: int) -> Optional[np.ndarray]:
+        """
+        Lädt Face Embedding aus der Datenbank
+
+        Returns:
+            512-dim numpy array oder None wenn kein Embedding vorhanden
+        """
+        try:
+            cursor = self.db_connection.cursor()
+            query = "SELECT embedding FROM cam2_detected_faces WHERE id = %s"
+            cursor.execute(query, (face_id,))
+            result = cursor.fetchone()
+            cursor.close()
+
+            if result and result[0]:
+                # BLOB zurück zu numpy array konvertieren
+                embedding = np.frombuffer(result[0], dtype=np.float32)
+                if len(embedding) == 512:
+                    return embedding
+                else:
+                    logger.warning(f"Ungültige Embedding-Größe für face_id {face_id}: {len(embedding)}")
+                    return None
+            return None
+
+        except Exception as e:
+            logger.error(f"Fehler beim Laden des Embeddings für face_id {face_id}: {e}")
+            return None
+
+    def calculate_cosine_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+        """
+        Berechnet Cosine Similarity zwischen zwei Embeddings
+
+        Returns:
+            Float zwischen 0.0 und 1.0 (1.0 = identisch)
+        """
+        # Normalisiere Vektoren
+        norm1 = np.linalg.norm(embedding1)
+        norm2 = np.linalg.norm(embedding2)
+
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        # Cosine Similarity
+        similarity = np.dot(embedding1, embedding2) / (norm1 * norm2)
+
+        # Clamp auf [0, 1]
+        return float(max(0.0, min(1.0, similarity)))
+
+    def find_similar_faces(self, face_id: int, threshold: float = 0.6, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Findet ähnliche Gesichter basierend auf Embedding Similarity
+
+        Args:
+            face_id: ID des Referenz-Gesichts
+            threshold: Minimum Cosine Similarity (0.6 = gute Balance)
+            limit: Maximale Anzahl Ergebnisse
+
+        Returns:
+            Liste von Dicts mit face_id, similarity, person_name, recording_id
+        """
+        # Lade Referenz-Embedding
+        ref_embedding = self.get_face_embedding(face_id)
+        if ref_embedding is None:
+            logger.warning(f"Kein Embedding für face_id {face_id}")
+            return []
+
+        try:
+            cursor = self.db_connection.cursor(pymysql.cursors.DictCursor)
+
+            # Lade alle Gesichter mit Embeddings (außer das Referenz-Gesicht selbst)
+            query = """
+                SELECT id, person_name, confidence, recording_id, embedding
+                FROM cam2_detected_faces
+                WHERE id != %s AND embedding IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1000
+            """
+            cursor.execute(query, (face_id,))
+            faces = cursor.fetchall()
+            cursor.close()
+
+            # Berechne Similarities
+            results = []
+            for face in faces:
+                if face['embedding']:
+                    embedding = np.frombuffer(face['embedding'], dtype=np.float32)
+                    if len(embedding) == 512:
+                        similarity = self.calculate_cosine_similarity(ref_embedding, embedding)
+
+                        if similarity >= threshold:
+                            results.append({
+                                'face_id': face['id'],
+                                'similarity': similarity,
+                                'person_name': face['person_name'],
+                                'confidence': face['confidence'],
+                                'recording_id': face['recording_id']
+                            })
+
+            # Sortiere nach Similarity (beste zuerst)
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+
+            return results[:limit]
+
+        except Exception as e:
+            logger.error(f"Fehler bei Similarity-Suche: {e}")
+            return []
+
+    def bulk_label_similar_faces(self, face_id: int, new_name: str, threshold: float = 0.65,
+                                 dry_run: bool = True) -> Dict[str, Any]:
+        """
+        Benennt alle ähnlichen Gesichter um (Bulk-Labeling)
+
+        Args:
+            face_id: Referenz-Gesicht
+            new_name: Neuer Name für alle ähnlichen Gesichter
+            threshold: Similarity-Schwellwert (0.65 = konservativ)
+            dry_run: Wenn True, nur Simulation ohne DB-Update
+
+        Returns:
+            Dict mit 'count', 'face_ids', 'dry_run' Status
+        """
+        similar_faces = self.find_similar_faces(face_id, threshold=threshold, limit=1000)
+
+        if not similar_faces:
+            logger.info(f"Keine ähnlichen Gesichter gefunden (threshold={threshold})")
+            return {'count': 0, 'face_ids': [], 'dry_run': dry_run}
+
+        face_ids = [f['face_id'] for f in similar_faces]
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Würde {len(face_ids)} Gesichter umbenennen zu '{new_name}'")
+            return {'count': len(face_ids), 'face_ids': face_ids, 'dry_run': True}
+
+        # Echtes Update
+        try:
+            cursor = self.db_connection.cursor()
+
+            # Batch-Update
+            placeholders = ', '.join(['%s'] * len(face_ids))
+            query = f"""
+                UPDATE cam2_detected_faces
+                SET person_name = %s
+                WHERE id IN ({placeholders})
+            """
+
+            cursor.execute(query, [new_name] + face_ids)
+            self.db_connection.commit()
+            cursor.close()
+
+            logger.info(f"✓ {len(face_ids)} Gesichter umbenannt zu '{new_name}'")
+            return {'count': len(face_ids), 'face_ids': face_ids, 'dry_run': False}
+
+        except Exception as e:
+            logger.error(f"Fehler beim Bulk-Labeling: {e}")
+            self.db_connection.rollback()
+            return {'count': 0, 'face_ids': [], 'dry_run': False, 'error': str(e)}
+
     def find_all_media_files(self) -> List[Path]:
         """Findet alle Mediendateien rekursiv"""
         media_files = []
@@ -1456,6 +1627,7 @@ def create_database_schema():
         bbox_y1 INT,
         bbox_x2 INT,
         bbox_y2 INT,
+        embedding BLOB,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_person (person_name),
