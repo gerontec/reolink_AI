@@ -11,15 +11,7 @@ import os
 import sys
 
 # KRITISCH: Environment-Variablen ZUERST setzen (vor allen AI-Imports!)
-# CUDA 11.8 Library Path für ONNX Runtime
-cuda_lib_path = '/usr/local/cuda-11.8/targets/x86_64-linux/lib'
-current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
-if current_ld_path:
-    os.environ['LD_LIBRARY_PATH'] = f"{cuda_lib_path}:{current_ld_path}"
-else:
-    os.environ['LD_LIBRARY_PATH'] = cuda_lib_path
-
-# ONNX Runtime und CUDA Optimierungen
+# HINWEIS: LD_LIBRARY_PATH muss VOR Python-Start gesetzt werden (siehe run_watchdog.sh)
 os.environ['ORT_DISABLE_CUDNN_FRONTEND'] = '1'
 os.environ['CUDA_MODULE_LOADING'] = 'LAZY'
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
