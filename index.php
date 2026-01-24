@@ -87,11 +87,39 @@ $named = $pdo->query("
     <link rel="stylesheet" href="css/style.css">
     <style>
         /* Bestehende Styles beibehalten... */
-        .person-quick-card img { width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
+        .person-quick-card {
+            display: grid;
+            grid-template-columns: 150px 1fr 350px;
+            gap: 15px;
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: #f9f9f9;
+        }
+        .person-quick-card img.face-crop { width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
+        .person-quick-card img.annotated-preview {
+            width: 350px;
+            height: auto;
+            max-height: 200px;
+            object-fit: contain;
+            border-radius: 8px;
+            border: 2px solid #4caf50;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .person-quick-card img.annotated-preview:hover { transform: scale(1.02); }
+        .person-quick-info { display: flex; flex-direction: column; justify-content: center; }
         .stats .unknown { border-bottom: 4px solid #f44336; }
         .stats .known { border-bottom: 4px solid #4caf50; }
         .btn-danger { background-color: #f44336; color: white; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; margin-left: 5px; }
         .btn-danger:hover { background-color: #da190b; }
+
+        /* Modal für großes Bild */
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.9); }
+        .modal-content { margin: auto; display: block; max-width: 95%; max-height: 95%; margin-top: 2%; }
+        .modal-close { position: absolute; top: 15px; right: 35px; color: #f1f1f1; font-size: 40px; font-weight: bold; cursor: pointer; }
+        .modal-close:hover { color: #bbb; }
     </style>
 </head>
 <body>
@@ -127,10 +155,18 @@ $named = $pdo->query("
             <div class="no-results"><h2>Keine unbenannten Gesichter gefunden.</h2></div>
         <?php else: ?>
             <div class="quick-rename">
-                <?php foreach ($persons as $person): ?>
+                <?php foreach ($persons as $person):
+                    // Annotiertes Bild-Pfad generieren
+                    $basename = basename($person['file_path']);
+                    $annotated_path = '/annotated/annotated_' . $basename;
+                    $annotated_full_path = $_SERVER['DOCUMENT_ROOT'] . $annotated_path;
+                    $has_annotated = file_exists($annotated_full_path);
+                ?>
                     <div class="person-quick-card">
-                        <img src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
-                        
+                        <!-- Gesichts-Crop -->
+                        <img class="face-crop" src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
+
+                        <!-- Info & Actions -->
                         <div class="person-quick-info">
                             <h4>Gesicht #<?= $person['id'] ?></h4>
                             <p>
@@ -141,15 +177,34 @@ $named = $pdo->query("
                             <?php if ($person['person_name'] !== 'Unknown'): ?>
                                 <p style="color:green">✓ Aktuell: <?= htmlspecialchars($person['person_name']) ?></p>
                             <?php endif; ?>
+
+                            <div class="person-quick-actions" style="margin-top: 10px;">
+                                <input type="text" id="name_<?= $person['id'] ?>"
+                                       placeholder="Name..."
+                                       list="nameSuggestions"
+                                       onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
+                                <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
+                                <button class="btn btn-danger" onclick="deleteFace(<?= $person['id'] ?>)">Löschen</button>
+                            </div>
                         </div>
 
-                        <div class="person-quick-actions">
-                            <input type="text" id="name_<?= $person['id'] ?>"
-                                   placeholder="Name..."
-                                   list="nameSuggestions"
-                                   onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
-                            <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
-                            <button class="btn btn-danger" onclick="deleteFace(<?= $person['id'] ?>)">Löschen</button>
+                        <!-- Annotiertes Bild mit Objekt-Boxen -->
+                        <div class="annotated-container">
+                            <?php if ($has_annotated): ?>
+                                <img class="annotated-preview"
+                                     src="<?= $annotated_path ?>?v=<?= time() ?>"
+                                     alt="Annotiert"
+                                     onclick="showFullImage('<?= $annotated_path ?>')"
+                                     title="Klicken für Vollansicht">
+                                <div style="text-align:center; margin-top:5px; font-size:11px; color:#666;">
+                                    📦 Mit Objekt-Boxen (klicken für groß)
+                                </div>
+                            <?php else: ?>
+                                <div style="padding:20px; text-align:center; color:#999; border:1px dashed #ccc; border-radius:8px;">
+                                    Kein annotiertes Bild verfügbar<br>
+                                    <small>Starten Sie watchdog2.py mit --save-annotated</small>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -162,6 +217,12 @@ $named = $pdo->query("
             <option value="<?= htmlspecialchars($n['person_name']) ?>">
         <?php endforeach; ?>
     </datalist>
+
+    <!-- Modal für Vollbild-Ansicht -->
+    <div id="imageModal" class="modal" onclick="closeModal()">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <img class="modal-content" id="modalImage">
+    </div>
 
     <script>
     async function renamePerson(faceId) {
@@ -197,6 +258,24 @@ $named = $pdo->query("
             alert('Fehler: ' + e);
         }
     }
+
+    function showFullImage(imagePath) {
+        const modal = document.getElementById('imageModal');
+        const modalImg = document.getElementById('modalImage');
+        modal.style.display = 'block';
+        modalImg.src = imagePath;
+    }
+
+    function closeModal() {
+        document.getElementById('imageModal').style.display = 'none';
+    }
+
+    // ESC-Taste schließt Modal
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') {
+            closeModal();
+        }
+    });
     </script>
 </body>
 </html>
