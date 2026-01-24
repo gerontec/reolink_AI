@@ -575,7 +575,11 @@ class AIAnalyzer:
         }
     
     def analyze_image(self, image_path: Path) -> Dict[str, Any]:
-        """Analysiert ein einzelnes Bild"""
+        """
+        Analysiert ein einzelnes Bild mit zweistufiger Erkennung:
+        1. YOLO Objekt-Detektion (schnell)
+        2. Gesichtserkennung NUR wenn YOLO Personen erkannt hat
+        """
         results = {
             'faces': [],
             'objects': [],
@@ -585,26 +589,30 @@ class AIAnalyzer:
             'analysis_timestamp': datetime.now(),
             'gpu_used': self.device == 'cuda'
         }
-        
+
         try:
             # Bild laden
             image = cv2.imread(str(image_path))
             if image is None:
                 logger.error(f"Bild konnte nicht geladen werden: {image_path}")
                 return results
-            
-            # Gesichtserkennung (GPU mit InsightFace)
-            face_results = self._detect_faces(image)
-            results['faces'] = face_results
-            
-            # Zähle bekannte Gesichter
-            results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
-            
-            # Objekt-Detektion mit YOLO (GPU)
+
+            # STUFE 1: Objekt-Detektion mit YOLO (GPU) - schneller Pre-Filter
             yolo_results = self._detect_objects(image)
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
+
+            # STUFE 2: Gesichtserkennung NUR wenn YOLO Personen gefunden hat
+            if results['persons'] > 0:
+                logger.debug(f"YOLO hat {results['persons']} Person(en) erkannt → Starte Gesichtserkennung")
+                face_results = self._detect_faces(image)
+                results['faces'] = face_results
+                results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
+            else:
+                logger.debug("YOLO hat keine Personen erkannt → Überspringe Gesichtserkennung")
+                results['faces'] = []
+                results['known_faces_count'] = 0
 
             # Szenen-Klassifikation
             results['scene_category'] = self._classify_scene(results)
@@ -1031,7 +1039,10 @@ class AIAnalyzer:
             return 'unknown'  # Alles andere
 
     def analyze_image_array(self, image: np.ndarray) -> Dict[str, Any]:
-        """Analysiert Bild als numpy array (für Video-Frames)"""
+        """
+        Analysiert Bild als numpy array (für Video-Frames)
+        Mit zweistufiger Erkennung: YOLO first, Faces nur wenn Person erkannt
+        """
         results = {
             'faces': [],
             'objects': [],
@@ -1039,25 +1050,29 @@ class AIAnalyzer:
             'persons': 0,
             'known_faces_count': 0
         }
-        
+
         try:
-            # Gesichtserkennung
-            face_results = self._detect_faces(image)
-            results['faces'] = face_results
-            results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
-            
-            # Objekt-Detektion
+            # STUFE 1: Objekt-Detektion mit YOLO (schneller Pre-Filter)
             yolo_results = self._detect_objects(image)
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
+
+            # STUFE 2: Gesichtserkennung NUR wenn YOLO Personen gefunden hat
+            if results['persons'] > 0:
+                face_results = self._detect_faces(image)
+                results['faces'] = face_results
+                results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
+            else:
+                results['faces'] = []
+                results['known_faces_count'] = 0
 
             # Szenen-Klassifikation
             results['scene_category'] = self._classify_scene(results)
 
         except Exception as e:
             logger.error(f"Fehler bei Array-Analyse: {e}")
-        
+
         return results
 
 
