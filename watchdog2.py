@@ -617,26 +617,53 @@ class AIAnalyzer:
     def _detect_faces(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """
         Erkennt Gesichter mit InsightFace (GPU-beschleunigt)
+        STRENGE FILTER gegen Falsch-Positive (z.B. gezeichnete Gesichter)
         """
         faces = []
-        
+
         if self.face_app is None:
             logger.debug("InsightFace nicht verfügbar - keine Gesichtserkennung")
             return faces
-        
+
         try:
             # InsightFace Detection (GPU)
             detected_faces = self.face_app.get(image)
-            
+
+            # Konfigurierbare Schwellwerte für strenge Filterung
+            MIN_DET_SCORE = 0.8          # Detection Confidence (0.8 = sehr sicher)
+            MIN_FACE_SIZE = 50           # Mindestgröße in Pixeln (Breite oder Höhe)
+            MIN_SIMILARITY = 0.5         # Similarity für bekannte Gesichter (erhöht von 0.4)
+
             for face in detected_faces:
+                # FILTER 1: Detection Score - wie sicher ist es ein Gesicht?
+                det_score = float(face.det_score) if hasattr(face, 'det_score') else 1.0
+                if det_score < MIN_DET_SCORE:
+                    logger.debug(f"⊘ Gesicht verworfen: Detection Score zu niedrig ({det_score:.3f} < {MIN_DET_SCORE})")
+                    continue
+
+                # FILTER 2: Gesichtsgröße - zu kleine Gesichter sind oft Artefakte
+                bbox = face.bbox.astype(int)
+                face_width = bbox[2] - bbox[0]
+                face_height = bbox[3] - bbox[1]
+
+                if face_width < MIN_FACE_SIZE or face_height < MIN_FACE_SIZE:
+                    logger.debug(f"⊘ Gesicht verworfen: Zu klein ({face_width}x{face_height}px < {MIN_FACE_SIZE}px)")
+                    continue
+
+                # FILTER 3: Aspekt-Verhältnis - echte Gesichter haben ca. 0.7-1.3 Verhältnis
+                aspect_ratio = face_width / max(face_height, 1)
+                if aspect_ratio < 0.5 or aspect_ratio > 2.0:
+                    logger.debug(f"⊘ Gesicht verworfen: Unnatürliches Aspekt-Verhältnis ({aspect_ratio:.2f})")
+                    continue
+
                 # Face Recognition mit bekannten Gesichtern vergleichen
                 name = "Unknown"
                 confidence = 0.0
-                
+
                 if self.known_face_encodings:
                     # InsightFace Embedding
                     face_embedding = face.embedding
-                    
+
                     # Cosine Similarity mit allen bekannten Gesichtern
                     similarities = []
                     for known_embedding in self.known_face_encodings:
@@ -645,20 +672,17 @@ class AIAnalyzer:
                             np.linalg.norm(face_embedding) * np.linalg.norm(known_embedding)
                         )
                         similarities.append(similarity)
-                    
+
                     # Bestes Match finden
                     if similarities:
                         best_idx = np.argmax(similarities)
                         best_similarity = similarities[best_idx]
-                        
-                        # Threshold für Match (0.4 = 40% Ähnlichkeit für InsightFace)
-                        # InsightFace ist genauer, daher niedrigerer Threshold als face_recognition
-                        if best_similarity > 0.4:
+
+                        # STRENGER Threshold für Match (0.5 statt 0.4)
+                        # Nur sehr sichere Matches werden akzeptiert
+                        if best_similarity > MIN_SIMILARITY:
                             name = self.known_face_names[best_idx]
                             confidence = float(best_similarity)
-                
-                # Bounding Box
-                bbox = face.bbox.astype(int)
 
                 # Embedding für DB-Speicherung
                 face_embedding = face.embedding
@@ -672,17 +696,20 @@ class AIAnalyzer:
                         'x2': int(bbox[2]),
                         'y2': int(bbox[3])
                     },
-                    'embedding': face_embedding  # 512-dimensional vector
+                    'embedding': face_embedding,  # 512-dimensional vector
+                    'det_score': det_score  # Detection Score für Debugging
                 })
-                
+
                 if name != "Unknown":
-                    logger.debug(f"✓ Bekanntes Gesicht (GPU): {name} ({confidence:.2f})")
-        
+                    logger.debug(f"✓ Bekanntes Gesicht (GPU): {name} (sim={confidence:.2f}, det={det_score:.2f})")
+                else:
+                    logger.debug(f"? Unbekanntes Gesicht: {face_width}x{face_height}px (det={det_score:.2f})")
+
         except Exception as e:
             logger.error(f"Fehler bei InsightFace GPU-Detection: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-        
+
         return faces
 
     def _calculate_parking_spot_id(self, bbox: Dict[str, float], image_width: int = 4512, image_height: int = 2512,
