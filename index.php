@@ -90,6 +90,8 @@ $named = $pdo->query("
         .person-quick-card img { width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
         .stats .unknown { border-bottom: 4px solid #f44336; }
         .stats .known { border-bottom: 4px solid #4caf50; }
+        .btn-danger { background-color: #f44336; color: white; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; margin-left: 5px; }
+        .btn-danger:hover { background-color: #da190b; }
     </style>
 </head>
 <body>
@@ -142,11 +144,12 @@ $named = $pdo->query("
                         </div>
 
                         <div class="person-quick-actions">
-                            <input type="text" id="name_<?= $person['id'] ?>" 
-                                   placeholder="Name..." 
+                            <input type="text" id="name_<?= $person['id'] ?>"
+                                   placeholder="Name..."
                                    list="nameSuggestions"
                                    onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
                             <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
+                            <button class="btn btn-danger" onclick="deleteFace(<?= $person['id'] ?>)">Löschen</button>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -164,7 +167,7 @@ $named = $pdo->query("
     async function renamePerson(faceId) {
         const name = document.getElementById('name_' + faceId).value.trim();
         if (!name) return;
-        
+
         try {
             const response = await fetch('api/rename_person.php', {
                 method: 'POST',
@@ -175,6 +178,27 @@ $named = $pdo->query("
             if (result.success) location.reload();
             else alert(result.error);
         } catch (e) { alert(e); }
+    }
+
+    async function deleteFace(faceId) {
+        if (!confirm('Wirklich löschen?')) return;
+
+        try {
+            const response = await fetch('api/delete_faces.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: [faceId] })
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert(`✓ Gesicht gelöscht!`);
+                location.reload();
+            } else {
+                alert('Fehler: ' + result.error);
+            }
+        } catch (e) {
+            alert('Fehler: ' + e);
+        }
     }
     </script>
 </body>
