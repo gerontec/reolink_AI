@@ -685,37 +685,47 @@ class AIAnalyzer:
         
         return faces
 
-    def _calculate_parking_spot_id(self, bbox: Dict[str, float], image_width: int = 4512, image_height: int = 2512,
-                                   grid_cols: int = 4, grid_rows: int = 3) -> int:
+    def _calculate_parking_spot_id(self, bbox: Dict[str, float], image_width: int = 4512, image_height: int = 2512) -> int:
         """
-        Berechnet parking_spot_id basierend auf Fahrzeug-Position im Grid
+        Berechnet parking_spot_id basierend auf Fahrzeug-Position
+
+        Layout:
+        - Stellplätze 1-5: Rechte 20% des Screens (x: 3610-4512), vertikal aufgeteilt
+        - Garagen 6-7: Untere 10% des Screens (y: 2261-2512), horizontal aufgeteilt
 
         Args:
             bbox: Bounding Box mit x1, y1, x2, y2
-            image_width: Bildbreite (Standard: 4K Reolink)
-            image_height: Bildhöhe
-            grid_cols: Anzahl Grid-Spalten (Standard: 4)
-            grid_rows: Anzahl Grid-Zeilen (Standard: 3)
+            image_width: Bildbreite (Standard: 4512)
+            image_height: Bildhöhe (Standard: 2512)
 
         Returns:
-            parking_spot_id: 1-12 (bei 4x3 Grid)
+            parking_spot_id: 1-7 oder 0 (wenn außerhalb aller Parkbereiche)
         """
         # Mittelpunkt des Fahrzeugs berechnen
         center_x = (bbox['x1'] + bbox['x2']) / 2
         center_y = (bbox['y1'] + bbox['y2']) / 2
 
-        # Grid-Cell berechnen
-        cell_width = image_width / grid_cols
-        cell_height = image_height / grid_rows
+        # Parkplatz-Definitionen (entspricht cam2_parking_spots Tabelle)
+        parking_spots = [
+            # Stellplätze 1-5 (rechts, vertikal)
+            {'id': 1, 'x1': 3610, 'y1': 0,    'x2': 4512, 'y2': 502},
+            {'id': 2, 'x1': 3610, 'y1': 502,  'x2': 4512, 'y2': 1004},
+            {'id': 3, 'x1': 3610, 'y1': 1004, 'x2': 4512, 'y2': 1507},
+            {'id': 4, 'x1': 3610, 'y1': 1507, 'x2': 4512, 'y2': 2009},
+            {'id': 5, 'x1': 3610, 'y1': 2009, 'x2': 4512, 'y2': 2512},
+            # Garagen 6-7 (unten, horizontal)
+            {'id': 6, 'x1': 0,    'y1': 2261, 'x2': 2256, 'y2': 2512},
+            {'id': 7, 'x1': 2256, 'y1': 2261, 'x2': 4512, 'y2': 2512},
+        ]
 
-        col = min(int(center_x / cell_width), grid_cols - 1)
-        row = min(int(center_y / cell_height), grid_rows - 1)
+        # Prüfe in welchem Parkplatz sich der Mittelpunkt befindet
+        for spot in parking_spots:
+            if (spot['x1'] <= center_x <= spot['x2'] and
+                spot['y1'] <= center_y <= spot['y2']):
+                return spot['id']
 
-        # parking_spot_id: 1-basiert, von links nach rechts, oben nach unten
-        # Row 0: IDs 1-4, Row 1: IDs 5-8, Row 2: IDs 9-12
-        parking_spot_id = (row * grid_cols) + col + 1
-
-        return parking_spot_id
+        # Fahrzeug außerhalb aller Parkbereiche
+        return 0
 
     def _detect_objects(self, image: np.ndarray) -> Dict[str, Any]:
         """Erkennt Objekte mit YOLO - Tesla P4 optimiert"""
@@ -771,9 +781,14 @@ class AIAnalyzer:
                         image_width,
                         image_height
                     )
-                    obj_data['parking_spot_id'] = parking_spot_id
+                    # Nur speichern wenn Fahrzeug in definiertem Parkbereich (nicht 0)
+                    obj_data['parking_spot_id'] = parking_spot_id if parking_spot_id > 0 else None
                     results['vehicles'].append(obj_data)
-                    logger.debug(f"Fahrzeug erkannt: {class_name} (Konfidenz: {confidence:.2f}, Parkplatz: {parking_spot_id})")
+
+                    if parking_spot_id > 0:
+                        logger.debug(f"Fahrzeug erkannt: {class_name} (Konfidenz: {confidence:.2f}, Parkplatz: {parking_spot_id})")
+                    else:
+                        logger.debug(f"Fahrzeug erkannt: {class_name} (Konfidenz: {confidence:.2f}, außerhalb Parkbereiche)")
                 else:
                     logger.debug(f"Objekt erkannt: {class_name} (Konfidenz: {confidence:.2f})")
         
@@ -1211,7 +1226,7 @@ class FileProcessor:
                     embedding_bytes
                 )
                 cursor.execute(query, values)
-            
+
             # Objekte eintragen
             for obj in results.get('objects', []):
                 query = """
@@ -1231,7 +1246,10 @@ class FileProcessor:
                     obj.get('parking_spot_id', None)  # NULL für nicht-Fahrzeuge
                 )
                 cursor.execute(query, values)
-            
+
+            # Parkplatz-Statistiken aktualisieren (für Fahrzeuge)
+            self._update_parking_stats(cursor, recording_id, results)
+
             # Zusammenfassung eintragen
             query = """
                 INSERT INTO cam2_analysis_summary
@@ -1249,10 +1267,66 @@ class FileProcessor:
                 results.get('gpu_used', False)
             )
             cursor.execute(query, values)
-            
+
         except Exception as e:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
+
+    def _update_parking_stats(self, cursor, recording_id: int, results: Dict[str, Any]):
+        """
+        Aktualisiert Parkplatz-Statistiken basierend auf erkannten Fahrzeugen
+
+        Args:
+            cursor: DB Cursor
+            recording_id: Recording ID
+            results: Analyse-Ergebnisse mit vehicles und objects
+        """
+        try:
+            # Hole Timestamp des Recordings
+            query = "SELECT recorded_at FROM cam2_recordings WHERE id = %s"
+            cursor.execute(query, (recording_id,))
+            result = cursor.fetchone()
+
+            if not result:
+                logger.warning(f"Kein Recording gefunden für ID {recording_id}")
+                return
+
+            recorded_at = result[0]
+            date = recorded_at.date()
+            hour = recorded_at.hour
+
+            # Verarbeite alle Fahrzeuge mit parking_spot_id
+            vehicles_processed = 0
+
+            for obj in results.get('objects', []):
+                parking_spot_id = obj.get('parking_spot_id')
+
+                # Nur Fahrzeuge mit gültiger parking_spot_id
+                if parking_spot_id is None:
+                    continue
+
+                vehicle_type = obj.get('class', 'unknown')
+
+                # INSERT ... ON DUPLICATE KEY UPDATE
+                # Erhöht occupancy_count wenn bereits vorhanden
+                query = """
+                    INSERT INTO cam2_parking_stats
+                    (parking_spot_id, date, hour, vehicle_type, occupancy_count)
+                    VALUES (%s, %s, %s, %s, 1)
+                    ON DUPLICATE KEY UPDATE
+                    occupancy_count = occupancy_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """
+
+                cursor.execute(query, (parking_spot_id, date, hour, vehicle_type))
+                vehicles_processed += 1
+
+            if vehicles_processed > 0:
+                logger.debug(f"✓ Parkplatz-Statistiken aktualisiert: {vehicles_processed} Fahrzeuge")
+
+        except Exception as e:
+            logger.error(f"Fehler beim Aktualisieren der Parkplatz-Statistiken: {e}")
+            # Nicht werfen, damit die Hauptanalyse nicht fehlschlägt
 
     def get_face_embedding(self, face_id: int) -> Optional[np.ndarray]:
         """
@@ -1486,6 +1560,15 @@ class FileProcessor:
                             )
                             if annotated_path:
                                 self.annotated_count += 1
+
+                                # Zusätzlich: Kopiere als "latest.jpg" für schnellen Zugriff
+                                import shutil
+                                latest_path = self.annotator.output_dir / f"latest_{camera_name}.jpg"
+                                try:
+                                    shutil.copy2(annotated_path, latest_path)
+                                    logger.debug(f"✓ Latest-Kopie: {latest_path.name}")
+                                except Exception as e:
+                                    logger.warning(f"Fehler beim Kopieren von latest.jpg: {e}")
                     
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")

@@ -34,11 +34,15 @@ $stats = [
     'total_recordings' => $pdo->query("SELECT COUNT(*) FROM cam2_recordings")->fetchColumn(),
 ];
 
+// Version
+define('APP_VERSION', 'v1.2.0');
+define('DEPLOY_DATE', '2026-01-23');
+
 // Filter
 $show_all = isset($_GET['all']);
-$min_confidence = floatval($_GET['min_conf'] ?? 0.4); // Standard etwas höher für Gesichter
-$min_size = intval($_GET['min_size'] ?? 40);       // Gesichter sind oft kleiner als ganze Körper
-$limit = intval($_GET['limit'] ?? 5);
+$min_confidence = floatval($_GET['min_conf'] ?? 0.0); // Alle Gesichter zeigen
+$min_size = intval($_GET['min_size'] ?? 0);       // Keine Größenbeschränkung
+$limit = intval($_GET['limit'] ?? 20);
 
 // --- Personen/Gesichter abrufen (5 neueste mit hoher Qualität) ---
 $sql = "
@@ -90,12 +94,17 @@ $named = $pdo->query("
         .person-quick-card img { width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
         .stats .unknown { border-bottom: 4px solid #f44336; }
         .stats .known { border-bottom: 4px solid #4caf50; }
+        .btn-danger { background-color: #dc3545; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; margin-left: 5px; }
+        .btn-danger:hover { background-color: #c82333; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>👤 CAM2 Admin - Gesichter zuordnen (5 neueste)</h1>
+            <h1>👤 CAM2 Admin - Gesichter zuordnen</h1>
+            <div style="font-size: 0.8em; color: #666; margin-bottom: 10px;">
+                Version: <?= APP_VERSION ?> | Deploy: <?= DEPLOY_DATE ?>
+            </div>
             <div class="stats">
                 <div class="stat-box">
                     <span class="stat-value"><?= number_format($stats['total_persons']) ?></span>
@@ -142,11 +151,14 @@ $named = $pdo->query("
                         </div>
 
                         <div class="person-quick-actions">
-                            <input type="text" id="name_<?= $person['id'] ?>" 
-                                   placeholder="Name..." 
+                            <input type="text" id="name_<?= $person['id'] ?>"
+                                   placeholder="Name..."
                                    list="nameSuggestions"
                                    onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
                             <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
+                            <?php if ($person['person_name'] === 'Unknown'): ?>
+                                <button class="btn btn-danger" onclick="deleteFace(<?= $person['id'] ?>)" title="Gesicht löschen">🗑️ Löschen</button>
+                            <?php endif; ?>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -164,7 +176,7 @@ $named = $pdo->query("
     async function renamePerson(faceId) {
         const name = document.getElementById('name_' + faceId).value.trim();
         if (!name) return;
-        
+
         try {
             const response = await fetch('api/rename_person.php', {
                 method: 'POST',
@@ -175,6 +187,26 @@ $named = $pdo->query("
             if (result.success) location.reload();
             else alert(result.error);
         } catch (e) { alert(e); }
+    }
+
+    async function deleteFace(faceId) {
+        try {
+            const response = await fetch('api/delete_faces.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: [faceId] })
+            });
+            const result = await response.json();
+            if (result.success) {
+                location.reload();
+            } else {
+                console.error('Fehler beim Löschen:', result.error);
+                location.reload();
+            }
+        } catch (e) {
+            console.error('Fehler beim Löschen:', e);
+            location.reload();
+        }
     }
     </script>
 </body>

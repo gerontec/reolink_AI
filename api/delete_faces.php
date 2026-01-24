@@ -7,7 +7,7 @@ header('Content-Type: application/json');
 
 // Database Configuration
 $db_config = [
-    'host' => '192.168.178.218',
+    'host' => 'localhost',
     'database' => 'wagodb',
     'user' => 'gh',
     'password' => 'a12345',
@@ -62,7 +62,7 @@ try {
     $pdo->beginTransaction();
     
     // Delete durchführen
-    $sql = "DELETE FROM cam_detected_faces WHERE id IN ($placeholders)";
+    $sql = "DELETE FROM cam2_detected_faces WHERE id IN ($placeholders)";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($face_ids);
     
