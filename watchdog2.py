@@ -373,13 +373,14 @@ class ImageAnnotator:
 
 class AIAnalyzer:
     """AI-Analyse Engine für Video und Bilder - Optimiert für Tesla P4 mit InsightFace GPU"""
-    
-    def __init__(self, yolo_model_path: str, known_faces_dir: str, force_gpu: bool = True):
+
+    def __init__(self, yolo_model_path: str, known_faces_dir: str, force_gpu: bool = True, det_thresh: float = 0.4):
         self.yolo_model = None
         self.known_faces_dir = Path(known_faces_dir)
         self.known_face_encodings = []
         self.known_face_names = []
         self.force_gpu = force_gpu
+        self.det_thresh = det_thresh  # InsightFace Detection Threshold
         self.is_tesla_p4 = False
         self.face_app = None  # InsightFace App
         
@@ -438,9 +439,12 @@ class AIAnalyzer:
                 name='buffalo_l',
                 providers=[('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
             )
-            
+
             # det_size für Tesla P4 optimiert (1280x1280 für 4K-Bilder)
-            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280))
+            # det_thresh konfigurierbar über --det-thresh Parameter
+            # Niedrigerer Wert = mehr Gesichter werden erkannt, auch bei schwierigen Bedingungen
+            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280), det_thresh=self.det_thresh)
+            logger.info(f"  Detection Threshold: {self.det_thresh}")
             
             # Provider-Check
             providers = self.face_app.det_model.session.get_providers()
@@ -1254,6 +1258,29 @@ class FileProcessor:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
 
+    def update_annotated_image_path(self, recording_id: int, annotated_path: Path):
+        """Aktualisiert den Pfad zum annotierten Bild in der Datenbank"""
+        try:
+            cursor = self.db_connection.cursor()
+
+            # Relativen Pfad berechnen (relativ zu MEDIA_BASE_PATH)
+            rel_path = str(annotated_path.relative_to(self.base_path))
+
+            query = """
+                UPDATE cam2_recordings
+                SET annotated_image_path = %s
+                WHERE id = %s
+            """
+            cursor.execute(query, (rel_path, recording_id))
+            self.db_connection.commit()
+            cursor.close()
+
+            logger.debug(f"✓ Annotierter Bildpfad gespeichert: {rel_path}")
+
+        except Exception as e:
+            logger.error(f"Fehler beim Aktualisieren des annotierten Bildpfads: {e}")
+            self.db_connection.rollback()
+
     def get_face_embedding(self, face_id: int) -> Optional[np.ndarray]:
         """
         Lädt Face Embedding aus der Datenbank
@@ -1486,6 +1513,8 @@ class FileProcessor:
                             )
                             if annotated_path:
                                 self.annotated_count += 1
+                                # Pfad in DB speichern
+                                self.update_annotated_image_path(recording_id, annotated_path)
                     
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
@@ -1611,6 +1640,7 @@ def create_database_schema():
         file_size BIGINT NOT NULL,
         recorded_at DATETIME NOT NULL,
         analyzed BOOLEAN DEFAULT FALSE,
+        annotated_image_path VARCHAR(255) DEFAULT NULL,
         created_at DATETIME NOT NULL,
         INDEX idx_camera (camera_name),
         INDEX idx_recorded (recorded_at),
@@ -1769,7 +1799,13 @@ def main():
         action='store_true',
         help='Analysiert bereits analysierte Dateien erneut (überschreibt DB-Einträge)'
     )
-    
+    parser.add_argument(
+        '--det-thresh',
+        type=float,
+        default=0.4,
+        help='InsightFace Detection Threshold (0.0-1.0, niedriger = mehr Gesichter, default: 0.4)'
+    )
+
     args = parser.parse_args()
     
     if args.debug:
@@ -1791,11 +1827,12 @@ def main():
         logger.info("Schema erfolgreich erstellt")
     
     # AI Analyzer initialisieren
-    logger.info("Initialisiere AI-Analyzer (Tesla P4 + InsightFace GPU)...")
+    logger.info(f"Initialisiere AI-Analyzer (Tesla P4 + InsightFace GPU, det_thresh={args.det_thresh})...")
     ai_analyzer = AIAnalyzer(
-        args.yolo_model, 
+        args.yolo_model,
         args.known_faces,
-        force_gpu=not args.cpu_only
+        force_gpu=not args.cpu_only,
+        det_thresh=args.det_thresh
     )
     
     # Optional: Annotator initialisieren

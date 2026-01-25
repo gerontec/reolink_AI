@@ -3,25 +3,10 @@
  * CAM2 Admin - Schnelle Personen-Benennung (5 neueste Gesichter mit hoher Qualität)
  */
 
-$db_config = [
-    'host' => 'localhost',
-    'database' => 'wagodb',
-    'user' => 'gh',
-    'password' => 'a12345',
-    'charset' => 'utf8mb4'
-];
+require_once __DIR__ . '/config.php';
 
 try {
-    $pdo = new PDO(
-        "mysql:host={$db_config['host']};dbname={$db_config['database']};charset={$db_config['charset']}",
-        $db_config['user'],
-        $db_config['password'],
-        [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false
-        ]
-    );
+    $pdo = getDbConnection();
 } catch (PDOException $e) {
     die("DB-Fehler: " . htmlspecialchars($e->getMessage()));
 }
@@ -51,6 +36,7 @@ $sql = "
         r.file_path,
         r.camera_name,
         r.recorded_at,
+        r.annotated_image_path,
         (f.bbox_x2 - f.bbox_x1) * (f.bbox_y2 - f.bbox_y1) as area,
         (f.bbox_x2 - f.bbox_x1) as width,
         (f.bbox_y2 - f.bbox_y1) as height
@@ -88,6 +74,8 @@ $named = $pdo->query("
     <style>
         /* Bestehende Styles beibehalten... */
         .person-quick-card img { width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
+        .person-quick-card a img { transition: opacity 0.2s, transform 0.2s; }
+        .person-quick-card a:hover img { opacity: 0.85; transform: scale(1.02); }
         .stats .unknown { border-bottom: 4px solid #f44336; }
         .stats .known { border-bottom: 4px solid #4caf50; }
     </style>
@@ -96,6 +84,9 @@ $named = $pdo->query("
     <div class="container">
         <header>
             <h1>👤 CAM2 Admin - Gesichter zuordnen (5 neueste)</h1>
+            <div style="text-align: center; color: #666; font-size: 0.85em; margin-bottom: 10px;">
+                Version 2.1.0 | Deploy: <?= date('d.m.Y H:i') ?> | Branch: claude/review-item-quality-fl3Zi
+            </div>
             <div class="stats">
                 <div class="stat-box">
                     <span class="stat-value"><?= number_format($stats['total_persons']) ?></span>
@@ -127,8 +118,16 @@ $named = $pdo->query("
             <div class="quick-rename">
                 <?php foreach ($persons as $person): ?>
                     <div class="person-quick-card">
-                        <img src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
-                        
+                        <?php if (!empty($person['annotated_image_path'])): ?>
+                            <a href="/web1/<?= htmlspecialchars($person['annotated_image_path']) ?>" target="_blank" title="Klicken für Vollbild mit allen YOLO Detektionen">
+                                <img src="/web1/<?= htmlspecialchars($person['annotated_image_path']) ?>" alt="Annotiertes Bild" style="max-width: 300px; height: auto; cursor: pointer;">
+                            </a>
+                            <div style="font-size: 0.8em; color: #666; margin-top: 5px;">📸 Mit YOLO Detektionen (Klick = Vollbild)</div>
+                        <?php else: ?>
+                            <img src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
+                            <div style="font-size: 0.8em; color: #999; margin-top: 5px;">⚠️ Nur Gesichts-Crop</div>
+                        <?php endif; ?>
+
                         <div class="person-quick-info">
                             <h4>Gesicht #<?= $person['id'] ?></h4>
                             <p>
@@ -142,11 +141,12 @@ $named = $pdo->query("
                         </div>
 
                         <div class="person-quick-actions">
-                            <input type="text" id="name_<?= $person['id'] ?>" 
-                                   placeholder="Name..." 
+                            <input type="text" id="name_<?= $person['id'] ?>"
+                                   placeholder="Name..."
                                    list="nameSuggestions"
                                    onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
                             <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
+                            <button class="btn btn-danger" onclick="deletePerson(<?= $person['id'] ?>)" style="background-color: #f44336;">🗑️ Löschen</button>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -164,12 +164,25 @@ $named = $pdo->query("
     async function renamePerson(faceId) {
         const name = document.getElementById('name_' + faceId).value.trim();
         if (!name) return;
-        
+
         try {
             const response = await fetch('api/rename_person.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_id: faceId, person_name: name })
+            });
+            const result = await response.json();
+            if (result.success) location.reload();
+            else alert(result.error);
+        } catch (e) { alert(e); }
+    }
+
+    async function deletePerson(faceId) {
+        try {
+            const response = await fetch('api/delete_faces.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: [faceId] })
             });
             const result = await response.json();
             if (result.success) location.reload();

@@ -3,29 +3,13 @@
  * API: Gesicht aus Bild ausschneiden und zurückgeben
  */
 
-// Database Configuration
-$db_config = [
-    'host' => '192.168.178.218',
-    'database' => 'wagodb',
-    'user' => 'gh',
-    'password' => 'a12345',
-    'charset' => 'utf8mb4'
-];
+require_once __DIR__ . '/../config.php';
 
 try {
-    $pdo = new PDO(
-        "mysql:host={$db_config['host']};dbname={$db_config['database']};charset={$db_config['charset']}",
-        $db_config['user'],
-        $db_config['password'],
-        [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-        ]
-    );
+    $pdo = getDbConnection();
 } catch (PDOException $e) {
     http_response_code(500);
-    header('Content-Type: text/plain');
-    echo 'Datenbankverbindung fehlgeschlagen';
+    echo json_encode(['success' => false, 'error' => 'Datenbankverbindung fehlgeschlagen']);
     exit;
 }
 
@@ -51,7 +35,7 @@ try {
             f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2,
             r.file_path
         FROM 
-            cam_detected_faces f
+            cam2_detected_faces f
         JOIN 
             cam_recordings r ON f.recording_id = r.id
         WHERE 
