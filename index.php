@@ -82,6 +82,9 @@ $named = $pdo->query("
     <div class="container">
         <header>
             <h1>👤 CAM2 Admin - Gesichter zuordnen (5 neueste)</h1>
+            <div style="text-align: center; color: #666; font-size: 0.85em; margin-bottom: 10px;">
+                Version 2.1.0 | Deploy: <?= date('d.m.Y H:i') ?> | Branch: claude/review-item-quality-fl3Zi
+            </div>
             <div class="stats">
                 <div class="stat-box">
                     <span class="stat-value"><?= number_format($stats['total_persons']) ?></span>
