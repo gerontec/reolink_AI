@@ -142,11 +142,12 @@ $named = $pdo->query("
                         </div>
 
                         <div class="person-quick-actions">
-                            <input type="text" id="name_<?= $person['id'] ?>" 
-                                   placeholder="Name..." 
+                            <input type="text" id="name_<?= $person['id'] ?>"
+                                   placeholder="Name..."
                                    list="nameSuggestions"
                                    onkeypress="if(event.key==='Enter') renamePerson(<?= $person['id'] ?>)">
                             <button class="btn btn-primary" onclick="renamePerson(<?= $person['id'] ?>)">Speichern</button>
+                            <button class="btn btn-danger" onclick="deletePerson(<?= $person['id'] ?>)" style="background-color: #f44336;">🗑️ Löschen</button>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -164,12 +165,25 @@ $named = $pdo->query("
     async function renamePerson(faceId) {
         const name = document.getElementById('name_' + faceId).value.trim();
         if (!name) return;
-        
+
         try {
             const response = await fetch('api/rename_person.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ face_id: faceId, person_name: name })
+            });
+            const result = await response.json();
+            if (result.success) location.reload();
+            else alert(result.error);
+        } catch (e) { alert(e); }
+    }
+
+    async function deletePerson(faceId) {
+        try {
+            const response = await fetch('api/delete_faces.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ face_ids: [faceId] })
             });
             const result = await response.json();
             if (result.success) location.reload();
