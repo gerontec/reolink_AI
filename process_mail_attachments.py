@@ -21,15 +21,26 @@ OUTPUT_BASE = Path("/var/www/web1")
 ALLOWED_EXTENSIONS = {'.mp4', '.jpg', '.jpeg', '.avi', '.mov'}
 
 # Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/home/gh/python/logs/mail_processor.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+import logging.handlers
+
+# Setup Syslog + File Logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Syslog Handler (für /var/log/mail.log via rsyslog)
+syslog_handler = logging.handlers.SysLogHandler(address='/dev/log', facility=logging.handlers.SysLogHandler.LOG_MAIL)
+syslog_handler.setFormatter(logging.Formatter('mail_processor[%(process)d]: %(levelname)s - %(message)s'))
+logger.addHandler(syslog_handler)
+
+# File Handler (Backup in Home-Verzeichnis)
+file_handler = logging.FileHandler('/home/gh/python/logs/mail_processor.log')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+# Console Handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
 
 
 def ensure_directories():
