@@ -103,6 +103,13 @@ $named = $pdo->query("
             </div>
         </header>
 
+        <!-- Link zur YOLO-Detektionen Seite -->
+        <div style="text-align: center; margin: 20px 0; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px;">
+            <a href="yolo_detections.php" style="color: white; text-decoration: none; font-size: 1.1em; font-weight: bold;">
+                🎯 Alle YOLO-Detektionen anzeigen (Personen, Fahrzeuge, Objekte)
+            </a>
+        </div>
+
         <div class="filters">
             <form method="GET">
                 <label>Anzahl: <input type="number" name="limit" value="<?= $limit ?>" style="width:60px;"></label>

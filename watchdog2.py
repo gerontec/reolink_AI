@@ -922,6 +922,7 @@ class AIAnalyzer:
             best_frame_number = 0
             best_frame_score = 0
             best_frame_array = None
+            best_frame_results = None  # Speichere vollständige Detektionen vom besten Frame
 
             while True:
                 ret, frame = cap.read()
@@ -947,6 +948,12 @@ class AIAnalyzer:
                     best_frame_score = frame_score
                     best_frame_number = frame_count
                     best_frame_array = frame.copy()
+                    # Speichere VOLLSTÄNDIGE Detektionen (mit bbox) vom besten Frame
+                    best_frame_results = {
+                        'objects': frame_results['objects'].copy(),
+                        'vehicles': frame_results['vehicles'].copy(),
+                        'persons': frame_results['persons']
+                    }
                     logger.debug(f"🎯 Neuer bester Frame: #{frame_count}, Score: {frame_score} "
                                f"({len(frame_results['faces'])} Gesichter, {frame_results['persons']} Personen)")
 
@@ -964,11 +971,11 @@ class AIAnalyzer:
                 if frame_results['persons'] > 0:
                     logger.debug(f"  Frame {frame_count}: {frame_results['persons']} Person(en) von YOLO erkannt")
 
-                # Objekte sammeln
+                # Objekte sammeln (für Statistik)
                 for obj in frame_results['objects']:
                     unique_objects.add(obj['class'])
 
-                # Fahrzeuge sammeln
+                # Fahrzeuge sammeln (für Statistik)
                 for vehicle in frame_results['vehicles']:
                     unique_vehicles.add(vehicle['class'])
 
@@ -987,8 +994,15 @@ class AIAnalyzer:
             results['analyzed_frames'] = analyzed_count
             results['faces'] = best_faces
             results['known_faces_count'] = sum(1 for f in best_faces if f['name'] != 'Unknown')
-            results['objects'] = [{'class': obj} for obj in unique_objects]
-            results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
+
+            # Verwende Detektionen vom BESTEN Frame für Annotation (mit bbox-Daten!)
+            if best_frame_results:
+                results['objects'] = best_frame_results['objects']
+                results['vehicles'] = best_frame_results['vehicles']
+            else:
+                # Fallback wenn kein bester Frame gefunden (leeres Video)
+                results['objects'] = [{'class': obj} for obj in unique_objects]
+                results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
 
             # Besten Frame für Annotation speichern
             results['best_frame'] = best_frame_array
