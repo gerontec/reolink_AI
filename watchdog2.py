@@ -1254,6 +1254,29 @@ class FileProcessor:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
 
+    def update_annotated_image_path(self, recording_id: int, annotated_path: Path):
+        """Aktualisiert den Pfad zum annotierten Bild in der Datenbank"""
+        try:
+            cursor = self.db_connection.cursor()
+
+            # Relativen Pfad berechnen (relativ zu MEDIA_BASE_PATH)
+            rel_path = str(annotated_path.relative_to(self.base_path))
+
+            query = """
+                UPDATE cam2_recordings
+                SET annotated_image_path = %s
+                WHERE id = %s
+            """
+            cursor.execute(query, (rel_path, recording_id))
+            self.db_connection.commit()
+            cursor.close()
+
+            logger.debug(f"✓ Annotierter Bildpfad gespeichert: {rel_path}")
+
+        except Exception as e:
+            logger.error(f"Fehler beim Aktualisieren des annotierten Bildpfads: {e}")
+            self.db_connection.rollback()
+
     def get_face_embedding(self, face_id: int) -> Optional[np.ndarray]:
         """
         Lädt Face Embedding aus der Datenbank
@@ -1486,6 +1509,8 @@ class FileProcessor:
                             )
                             if annotated_path:
                                 self.annotated_count += 1
+                                # Pfad in DB speichern
+                                self.update_annotated_image_path(recording_id, annotated_path)
                     
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
@@ -1611,6 +1636,7 @@ def create_database_schema():
         file_size BIGINT NOT NULL,
         recorded_at DATETIME NOT NULL,
         analyzed BOOLEAN DEFAULT FALSE,
+        annotated_image_path VARCHAR(255) DEFAULT NULL,
         created_at DATETIME NOT NULL,
         INDEX idx_camera (camera_name),
         INDEX idx_recorded (recorded_at),

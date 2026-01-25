@@ -181,14 +181,38 @@ async function showFaceDetail(faceId) {
     try {
         const response = await fetch(`api/face_detail.php?id=${faceId}`);
         const data = await response.json();
-        
+
         if (data.success) {
             const detail = data.face;
+
+            // Hole annotiertes Bild
+            const annotatedResponse = await fetch(`api/get_annotated_image.php?face_id=${faceId}`);
+            const annotatedData = await annotatedResponse.json();
+
+            let annotatedImageHtml = '';
+            if (annotatedData.success && annotatedData.annotated_image_path) {
+                annotatedImageHtml = `
+                    <div style="margin-top: 20px;">
+                        <h3>Annotiertes Bild (mit Detektionen)</h3>
+                        <img src="/${annotatedData.annotated_image_path}"
+                             style="width: 100%; border-radius: 8px; border: 2px solid #4caf50;">
+                    </div>
+                `;
+            } else {
+                annotatedImageHtml = `
+                    <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 8px;">
+                        <p><strong>⚠️ Kein annotiertes Bild verfügbar</strong></p>
+                        <p style="font-size: 0.9em;">Starten Sie watchdog2.py mit --save-annotated</p>
+                    </div>
+                `;
+            }
+
             document.getElementById('detailContent').innerHTML = `
                 <h2>Gesicht Details</h2>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
                     <div>
-                        <img src="api/crop_face.php?id=${faceId}&size=400" 
+                        <h3>Gesichts-Crop</h3>
+                        <img src="api/crop_detection.php?id=${faceId}&type=face&size=400"
                              style="width: 100%; border-radius: 8px;">
                     </div>
                     <div>
@@ -204,6 +228,7 @@ async function showFaceDetail(faceId) {
                         </a>
                     </div>
                 </div>
+                ${annotatedImageHtml}
             `;
             document.getElementById('detailModal').style.display = 'block';
         }
