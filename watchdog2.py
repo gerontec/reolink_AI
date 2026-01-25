@@ -373,13 +373,14 @@ class ImageAnnotator:
 
 class AIAnalyzer:
     """AI-Analyse Engine für Video und Bilder - Optimiert für Tesla P4 mit InsightFace GPU"""
-    
-    def __init__(self, yolo_model_path: str, known_faces_dir: str, force_gpu: bool = True):
+
+    def __init__(self, yolo_model_path: str, known_faces_dir: str, force_gpu: bool = True, det_thresh: float = 0.4):
         self.yolo_model = None
         self.known_faces_dir = Path(known_faces_dir)
         self.known_face_encodings = []
         self.known_face_names = []
         self.force_gpu = force_gpu
+        self.det_thresh = det_thresh  # InsightFace Detection Threshold
         self.is_tesla_p4 = False
         self.face_app = None  # InsightFace App
         
@@ -440,9 +441,10 @@ class AIAnalyzer:
             )
 
             # det_size für Tesla P4 optimiert (1280x1280 für 4K-Bilder)
-            # det_thresh=0.4 für bessere Gesichtserkennung (Standard: 0.5, alt war ~0.8)
+            # det_thresh konfigurierbar über --det-thresh Parameter
             # Niedrigerer Wert = mehr Gesichter werden erkannt, auch bei schwierigen Bedingungen
-            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280), det_thresh=0.4)
+            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280), det_thresh=self.det_thresh)
+            logger.info(f"  Detection Threshold: {self.det_thresh}")
             
             # Provider-Check
             providers = self.face_app.det_model.session.get_providers()
@@ -1797,7 +1799,13 @@ def main():
         action='store_true',
         help='Analysiert bereits analysierte Dateien erneut (überschreibt DB-Einträge)'
     )
-    
+    parser.add_argument(
+        '--det-thresh',
+        type=float,
+        default=0.4,
+        help='InsightFace Detection Threshold (0.0-1.0, niedriger = mehr Gesichter, default: 0.4)'
+    )
+
     args = parser.parse_args()
     
     if args.debug:
@@ -1819,11 +1827,12 @@ def main():
         logger.info("Schema erfolgreich erstellt")
     
     # AI Analyzer initialisieren
-    logger.info("Initialisiere AI-Analyzer (Tesla P4 + InsightFace GPU)...")
+    logger.info(f"Initialisiere AI-Analyzer (Tesla P4 + InsightFace GPU, det_thresh={args.det_thresh})...")
     ai_analyzer = AIAnalyzer(
-        args.yolo_model, 
+        args.yolo_model,
         args.known_faces,
-        force_gpu=not args.cpu_only
+        force_gpu=not args.cpu_only,
+        det_thresh=args.det_thresh
     )
     
     # Optional: Annotator initialisieren
