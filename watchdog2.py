@@ -596,19 +596,23 @@ class AIAnalyzer:
             if image is None:
                 logger.error(f"Bild konnte nicht geladen werden: {image_path}")
                 return results
-            
-            # Gesichtserkennung (GPU mit InsightFace)
-            face_results = self._detect_faces(image)
-            results['faces'] = face_results
-            
-            # Zähle bekannte Gesichter
-            results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
-            
-            # Objekt-Detektion mit YOLO (GPU)
+
+            # STAGE 1: Objekt-Detektion mit YOLO (GPU) - ZUERST!
             yolo_results = self._detect_objects(image)
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
+
+            # STAGE 2: Gesichtserkennung NUR wenn Personen erkannt wurden
+            if results['persons'] > 0:
+                logger.debug(f"{results['persons']} Person(en) erkannt - starte Gesichtserkennung")
+                face_results = self._detect_faces(image)
+                results['faces'] = face_results
+
+                # Zähle bekannte Gesichter
+                results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
+            else:
+                logger.debug("Keine Personen erkannt - überspringe Gesichtserkennung")
 
             # Szenen-Klassifikation
             results['scene_category'] = self._classify_scene(results)
@@ -1044,16 +1048,17 @@ class AIAnalyzer:
         }
         
         try:
-            # Gesichtserkennung
-            face_results = self._detect_faces(image)
-            results['faces'] = face_results
-            results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
-            
-            # Objekt-Detektion
+            # STAGE 1: Objekt-Detektion mit YOLO - ZUERST!
             yolo_results = self._detect_objects(image)
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
+
+            # STAGE 2: Gesichtserkennung NUR wenn Personen erkannt wurden
+            if results['persons'] > 0:
+                face_results = self._detect_faces(image)
+                results['faces'] = face_results
+                results['known_faces_count'] = sum(1 for f in face_results if f['name'] != 'Unknown')
 
             # Szenen-Klassifikation
             results['scene_category'] = self._classify_scene(results)
