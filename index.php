@@ -74,6 +74,8 @@ $named = $pdo->query("
     <style>
         /* Bestehende Styles beibehalten... */
         .person-quick-card img { width: 150px; height: 150px; object-fit: cover; border-radius: 8px; border: 1px solid #ccc; }
+        .person-quick-card a img { transition: opacity 0.2s, transform 0.2s; }
+        .person-quick-card a:hover img { opacity: 0.85; transform: scale(1.02); }
         .stats .unknown { border-bottom: 4px solid #f44336; }
         .stats .known { border-bottom: 4px solid #4caf50; }
     </style>
@@ -117,8 +119,10 @@ $named = $pdo->query("
                 <?php foreach ($persons as $person): ?>
                     <div class="person-quick-card">
                         <?php if (!empty($person['annotated_image_path'])): ?>
-                            <img src="/web1/<?= htmlspecialchars($person['annotated_image_path']) ?>" alt="Annotiertes Bild" style="max-width: 300px; height: auto;">
-                            <div style="font-size: 0.8em; color: #666; margin-top: 5px;">📸 Mit YOLO Detektionen</div>
+                            <a href="/web1/<?= htmlspecialchars($person['annotated_image_path']) ?>" target="_blank" title="Klicken für Vollbild mit allen YOLO Detektionen">
+                                <img src="/web1/<?= htmlspecialchars($person['annotated_image_path']) ?>" alt="Annotiertes Bild" style="max-width: 300px; height: auto; cursor: pointer;">
+                            </a>
+                            <div style="font-size: 0.8em; color: #666; margin-top: 5px;">📸 Mit YOLO Detektionen (Klick = Vollbild)</div>
                         <?php else: ?>
                             <img src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
                             <div style="font-size: 0.8em; color: #999; margin-top: 5px;">⚠️ Nur Gesichts-Crop</div>
