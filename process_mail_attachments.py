@@ -15,8 +15,8 @@ from email.parser import BytesParser
 import shutil
 
 # Configuration
-MAILDIR_NEW = Path("/var/www/web1/Maildir/new")
-MAILDIR_PROCESSED = Path("/home/gh/python/mail_processed")  # Alternative: eigenes Verzeichnis
+MAILDIR_NEW = Path("/home/gh/Maildir/new")  # User gh's Maildir
+MAILDIR_PROCESSED = Path("/home/gh/python/mail_processed")
 OUTPUT_BASE = Path("/var/www/web1")
 ALLOWED_EXTENSIONS = {'.mp4', '.jpg', '.jpeg', '.avi', '.mov'}
 
