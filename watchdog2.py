@@ -438,9 +438,11 @@ class AIAnalyzer:
                 name='buffalo_l',
                 providers=[('CUDAExecutionProvider', cuda_options), 'CPUExecutionProvider']
             )
-            
+
             # det_size für Tesla P4 optimiert (1280x1280 für 4K-Bilder)
-            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280))
+            # det_thresh=0.4 für bessere Gesichtserkennung (Standard: 0.5, alt war ~0.8)
+            # Niedrigerer Wert = mehr Gesichter werden erkannt, auch bei schwierigen Bedingungen
+            self.face_app.prepare(ctx_id=0, det_size=(1280, 1280), det_thresh=0.4)
             
             # Provider-Check
             providers = self.face_app.det_model.session.get_providers()
