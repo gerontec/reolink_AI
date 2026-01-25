@@ -767,6 +767,7 @@ class AIAnalyzer:
                 # Spezielle Kategorien
                 if class_name == 'person':
                     results['persons'] += 1
+                    logger.debug(f"👤 Person erkannt: Konfidenz {confidence:.2f}, Position ({obj_data['bbox']['x1']:.0f},{obj_data['bbox']['y1']:.0f})")
                 elif class_name in vehicle_classes:
                     # Berechne parking_spot_id für Fahrzeuge
                     image_height, image_width = image.shape[:2]
@@ -914,6 +915,9 @@ class AIAnalyzer:
             all_faces = []  # Liste aller gefundenen Gesichter mit Frame-Info
             unique_objects = set()
             unique_vehicles = set()
+            best_frame_number = 0
+            best_frame_score = 0
+            best_frame_array = None
 
             while True:
                 ret, frame = cap.read()
@@ -931,6 +935,17 @@ class AIAnalyzer:
                 # Frame analysieren
                 frame_results = self.analyze_image_array(frame)
 
+                # Berechne Frame-Score (Gesichter + Personen haben höhere Priorität)
+                frame_score = len(frame_results['faces']) * 10 + frame_results['persons'] * 5 + len(frame_results['objects'])
+
+                # Track besten Frame (für Annotation)
+                if frame_score > best_frame_score:
+                    best_frame_score = frame_score
+                    best_frame_number = frame_count
+                    best_frame_array = frame.copy()
+                    logger.debug(f"🎯 Neuer bester Frame: #{frame_count}, Score: {frame_score} "
+                               f"({len(frame_results['faces'])} Gesichter, {frame_results['persons']} Personen)")
+
                 # Gesichter sammeln (ALLE, mit Frame-Nummer)
                 for face in frame_results['faces']:
                     face_copy = face.copy()
@@ -939,6 +954,11 @@ class AIAnalyzer:
                     bbox = face['bbox']
                     face_copy['bbox_area'] = (bbox['x2'] - bbox['x1']) * (bbox['y2'] - bbox['y1'])
                     all_faces.append(face_copy)
+                    logger.debug(f"  Frame {frame_count}: Gesicht {face['name']} erkannt")
+
+                # Log YOLO-Personen pro Frame
+                if frame_results['persons'] > 0:
+                    logger.debug(f"  Frame {frame_count}: {frame_results['persons']} Person(en) von YOLO erkannt")
 
                 # Objekte sammeln
                 for obj in frame_results['objects']:
@@ -966,12 +986,18 @@ class AIAnalyzer:
             results['objects'] = [{'class': obj} for obj in unique_objects]
             results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
 
+            # Besten Frame für Annotation speichern
+            results['best_frame'] = best_frame_array
+            results['best_frame_number'] = best_frame_number
+
             # Szenen-Klassifikation basierend auf Video-Analyse
             results['scene_category'] = self._classify_scene(results)
 
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
                        f"{results['known_faces_count']} bekannte Gesichter, {results['max_persons']} max. Personen, "
                        f"Szene: {results['scene_category']}")
+            if best_frame_number > 0:
+                logger.info(f"  Bester Frame für Annotation: #{best_frame_number} (Score: {best_frame_score})")
 
         except Exception as e:
             logger.error(f"Fehler bei Video-Analyse {video_path}: {e}")
@@ -1519,11 +1545,35 @@ class FileProcessor:
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
                     analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=1)
-                    
+
                     # In DB eintragen
                     recording_id = self.insert_file_to_db(
                         filepath, camera_name, file_type, timestamp, analysis_results
                     )
+
+                    # Annotiertes Bild aus bestem Frame erstellen
+                    if recording_id and self.annotator and analysis_results and analysis_results.get('best_frame') is not None:
+                        best_frame = analysis_results['best_frame']
+                        best_frame_num = analysis_results.get('best_frame_number', 0)
+
+                        # Temporäre Datei für den Frame erstellen
+                        temp_frame_path = Path(f"/tmp/frame_{recording_id}.jpg")
+                        cv2.imwrite(str(temp_frame_path), best_frame)
+
+                        # Frame annotieren
+                        annotated_path = self.annotator.annotate_image(
+                            temp_frame_path, analysis_results, save_prefix=f"video_{filename.replace('.mp4', '')}"
+                        )
+
+                        if annotated_path:
+                            self.annotated_count += 1
+                            # Pfad in DB speichern
+                            self.update_annotated_image_path(recording_id, annotated_path)
+                            logger.info(f"  ✓ Annotiertes Bild aus Frame #{best_frame_num} erstellt")
+
+                        # Temporäre Datei löschen
+                        if temp_frame_path.exists():
+                            temp_frame_path.unlink()
                 
                 analysis_time = time.time() - analysis_start
                 self.total_analysis_time += analysis_time
