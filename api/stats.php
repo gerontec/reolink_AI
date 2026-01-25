@@ -7,7 +7,7 @@ header('Content-Type: application/json');
 
 // Database Configuration
 $db_config = [
-    'host' => '192.168.178.218',
+    'host' => 'localhost',
     'database' => 'wagodb',
     'user' => 'gh',
     'password' => 'a12345',
@@ -35,9 +35,9 @@ try {
     $stats = [];
     
     // Gesichter
-    $stats['total_faces'] = $pdo->query("SELECT COUNT(*) FROM cam_detected_faces")->fetchColumn();
-    $stats['unknown_faces'] = $pdo->query("SELECT COUNT(*) FROM cam_detected_faces WHERE person_name = 'Unknown'")->fetchColumn();
-    $stats['named_persons'] = $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam_detected_faces WHERE person_name != 'Unknown'")->fetchColumn();
+    $stats['total_faces'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces")->fetchColumn();
+    $stats['unknown_faces'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces WHERE person_name = 'Unknown'")->fetchColumn();
+    $stats['named_persons'] = $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam2_detected_faces WHERE person_name != 'Unknown'")->fetchColumn();
     
     // Aufnahmen
     $stats['total_recordings'] = $pdo->query("SELECT COUNT(*) FROM cam_recordings")->fetchColumn();
@@ -51,7 +51,7 @@ try {
     // Top Personen
     $top_persons = $pdo->query("
         SELECT person_name, COUNT(*) as count 
-        FROM cam_detected_faces 
+        FROM cam2_detected_faces 
         WHERE person_name != 'Unknown'
         GROUP BY person_name 
         ORDER BY count DESC 

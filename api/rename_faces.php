@@ -7,7 +7,7 @@ header('Content-Type: application/json');
 
 // Database Configuration
 $db_config = [
-    'host' => '192.168.178.218',
+    'host' => 'localhost',
     'database' => 'wagodb',
     'user' => 'gh',
     'password' => 'a12345',
@@ -73,7 +73,7 @@ try {
     $pdo->beginTransaction();
     
     // Update durchführen
-    $sql = "UPDATE cam_detected_faces SET person_name = ? WHERE id IN ($placeholders)";
+    $sql = "UPDATE cam2_detected_faces SET person_name = ? WHERE id IN ($placeholders)";
     $stmt = $pdo->prepare($sql);
     
     // Parameter zusammenführen: neuer Name + alle Face IDs

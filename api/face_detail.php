@@ -7,7 +7,7 @@ header('Content-Type: application/json');
 
 // Database Configuration
 $db_config = [
-    'host' => '192.168.178.218',
+    'host' => 'localhost',
     'database' => 'wagodb',
     'user' => 'gh',
     'password' => 'a12345',
@@ -59,7 +59,7 @@ try {
             r.recorded_at,
             r.file_type
         FROM 
-            cam_detected_faces f
+            cam2_detected_faces f
         JOIN 
             cam_recordings r ON f.recording_id = r.id
         WHERE 

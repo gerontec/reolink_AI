@@ -5,7 +5,7 @@
 
 // Database Configuration
 $db_config = [
-    'host' => '192.168.178.218',
+    'host' => 'localhost',
     'database' => 'wagodb',
     'user' => 'gh',
     'password' => 'a12345',
@@ -51,7 +51,7 @@ try {
             f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2,
             r.file_path
         FROM 
-            cam_detected_faces f
+            cam2_detected_faces f
         JOIN 
             cam_recordings r ON f.recording_id = r.id
         WHERE 
