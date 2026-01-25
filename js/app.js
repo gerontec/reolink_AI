@@ -194,7 +194,7 @@ async function showFaceDetail(faceId) {
                 annotatedImageHtml = `
                     <div style="margin-top: 20px;">
                         <h3>Annotiertes Bild (mit Detektionen)</h3>
-                        <img src="/${annotatedData.annotated_image_path}"
+                        <img src="/web1/${annotatedData.annotated_image_path}"
                              style="width: 100%; border-radius: 8px; border: 2px solid #4caf50;">
                     </div>
                 `;

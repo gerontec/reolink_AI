@@ -114,7 +114,7 @@ $named = $pdo->query("
                 <?php foreach ($persons as $person): ?>
                     <div class="person-quick-card">
                         <?php if (!empty($person['annotated_image_path'])): ?>
-                            <img src="/<?= htmlspecialchars($person['annotated_image_path']) ?>" alt="Annotiertes Bild" style="max-width: 300px; height: auto;">
+                            <img src="/web1/<?= htmlspecialchars($person['annotated_image_path']) ?>" alt="Annotiertes Bild" style="max-width: 300px; height: auto;">
                             <div style="font-size: 0.8em; color: #666; margin-top: 5px;">📸 Mit YOLO Detektionen</div>
                         <?php else: ?>
                             <img src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
