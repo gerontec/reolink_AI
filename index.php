@@ -3,25 +3,10 @@
  * CAM2 Admin - Schnelle Personen-Benennung (5 neueste Gesichter mit hoher Qualität)
  */
 
-$db_config = [
-    'host' => 'localhost',
-    'database' => 'wagodb',
-    'user' => 'gh',
-    'password' => 'a12345',
-    'charset' => 'utf8mb4'
-];
+require_once __DIR__ . '/config.php';
 
 try {
-    $pdo = new PDO(
-        "mysql:host={$db_config['host']};dbname={$db_config['database']};charset={$db_config['charset']}",
-        $db_config['user'],
-        $db_config['password'],
-        [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false
-        ]
-    );
+    $pdo = getDbConnection();
 } catch (PDOException $e) {
     die("DB-Fehler: " . htmlspecialchars($e->getMessage()));
 }
@@ -51,6 +36,7 @@ $sql = "
         r.file_path,
         r.camera_name,
         r.recorded_at,
+        r.annotated_image_path,
         (f.bbox_x2 - f.bbox_x1) * (f.bbox_y2 - f.bbox_y1) as area,
         (f.bbox_x2 - f.bbox_x1) as width,
         (f.bbox_y2 - f.bbox_y1) as height
@@ -127,8 +113,14 @@ $named = $pdo->query("
             <div class="quick-rename">
                 <?php foreach ($persons as $person): ?>
                     <div class="person-quick-card">
-                        <img src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
-                        
+                        <?php if (!empty($person['annotated_image_path'])): ?>
+                            <img src="/<?= htmlspecialchars($person['annotated_image_path']) ?>" alt="Annotiertes Bild" style="max-width: 300px; height: auto;">
+                            <div style="font-size: 0.8em; color: #666; margin-top: 5px;">📸 Mit YOLO Detektionen</div>
+                        <?php else: ?>
+                            <img src="api/crop_detection.php?v=2&id=<?= $person['id'] ?>&type=face&size=150" alt="Gesicht">
+                            <div style="font-size: 0.8em; color: #999; margin-top: 5px;">⚠️ Nur Gesichts-Crop</div>
+                        <?php endif; ?>
+
                         <div class="person-quick-info">
                             <h4>Gesicht #<?= $person['id'] ?></h4>
                             <p>

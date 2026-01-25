@@ -6,24 +6,13 @@
  * Scans the annotated/ directory and links images to their recordings
  */
 
-$db_config = [
-    'host' => 'localhost',
-    'database' => 'wagodb',
-    'user' => 'gh',
-    'password' => 'a12345',
-    'charset' => 'utf8mb4'
-];
+require_once __DIR__ . '/config.php';
 
 $annotated_dir = '/var/www/web1/annotated';
 
 try {
     echo "Connecting to database...\n";
-    $pdo = new PDO(
-        "mysql:host={$db_config['host']};dbname={$db_config['database']};charset={$db_config['charset']}",
-        $db_config['user'],
-        $db_config['password'],
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
+    $pdo = getDbConnection();
 
     echo "Scanning annotated directory: $annotated_dir\n";
 

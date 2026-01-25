@@ -4,22 +4,11 @@
  * Database Migration: Add annotated_image_path column to cam2_recordings
  */
 
-$db_config = [
-    'host' => 'localhost',
-    'database' => 'wagodb',
-    'user' => 'gh',
-    'password' => 'a12345',
-    'charset' => 'utf8mb4'
-];
+require_once __DIR__ . '/config.php';
 
 try {
     echo "Connecting to database...\n";
-    $pdo = new PDO(
-        "mysql:host={$db_config['host']};dbname={$db_config['database']};charset={$db_config['charset']}",
-        $db_config['user'],
-        $db_config['password'],
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-    );
+    $pdo = getDbConnection();
 
     // Check if column exists
     $stmt = $pdo->query("SHOW COLUMNS FROM cam2_recordings LIKE 'annotated_image_path'");
