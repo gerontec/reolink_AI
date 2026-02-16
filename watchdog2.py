@@ -34,9 +34,9 @@ from ultralytics import YOLO
 import torch
 
 # Configuration
-MEDIA_BASE_PATH = "/var/www/web1"
-ANNOTATED_OUTPUT_PATH = "/var/www/web1/annotated"
-FACES_OUTPUT_PATH = "/var/www/web1/faces"
+MEDIA_BASE_PATH = "/var/www/html/web1"
+ANNOTATED_OUTPUT_PATH = "/var/www/html/web1/annotated"
+FACES_OUTPUT_PATH = "/var/www/html/web1/faces"
 DB_CONFIG = {
     'host': 'localhost',  # TCP connection (not Unix socket)
     'database': 'wagodb',
