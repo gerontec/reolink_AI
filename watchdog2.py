@@ -999,10 +999,15 @@ class AIAnalyzer:
             if best_frame_results:
                 results['objects'] = best_frame_results['objects']
                 results['vehicles'] = best_frame_results['vehicles']
+                logger.debug(f"Using {len(best_frame_results['objects'])} objects from best frame")
             else:
-                # Fallback wenn kein bester Frame gefunden (leeres Video)
-                results['objects'] = [{'class': obj} for obj in unique_objects]
-                results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
+                # Fallback: wenn kein bester Frame gefunden wurde (sollte nur bei komplett leeren Videos passieren)
+                # Da unique_objects/unique_vehicles nur Klassennamen ohne Confidence enthalten,
+                # geben wir leere Listen zurück um keine ungültigen Daten zu speichern
+                results['objects'] = []
+                results['vehicles'] = []
+                if unique_objects or unique_vehicles:
+                    logger.warning(f"Video {video_path}: Objects detected ({unique_objects}) but no best frame found - data incomplete")
 
             # Besten Frame für Annotation speichern
             results['best_frame'] = best_frame_array
@@ -1016,6 +1021,10 @@ class AIAnalyzer:
                        f"Szene: {results['scene_category']}")
             if best_frame_number > 0:
                 logger.info(f"  Bester Frame für Annotation: #{best_frame_number} (Score: {best_frame_score})")
+
+            # Debug: Log object confidence scores
+            for i, obj in enumerate(results.get('objects', [])):
+                logger.debug(f"  Object {i}: {obj.get('class')}, confidence={'confidence' in obj and obj['confidence'] or 'MISSING'}")
 
         except Exception as e:
             logger.error(f"Fehler bei Video-Analyse {video_path}: {e}")
@@ -1263,6 +1272,10 @@ class FileProcessor:
             
             # Objekte eintragen
             for obj in results.get('objects', []):
+                # Debug logging to see what confidence values we're getting
+                confidence = obj.get('confidence', 0.0)
+                logger.debug(f"Inserting object: class={obj.get('class')}, confidence={confidence}, has_key={'confidence' in obj}")
+
                 query = """
                     INSERT INTO cam2_detected_objects
                     (recording_id, object_class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, parking_spot_id)
@@ -1272,7 +1285,7 @@ class FileProcessor:
                 values = (
                     recording_id,
                     obj.get('class', 'unknown'),
-                    obj.get('confidence', 0.0),
+                    confidence,
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
