@@ -895,7 +895,6 @@ class FileProcessor:
                 existing_id = existing_row[0]
                 # Alte AI-Analyse Ergebnisse löschen
                 cursor.execute("DELETE FROM cam2_detected_faces WHERE recording_id = %s", (existing_id,))
-                cursor.execute("DELETE FROM cam2_detected_persons WHERE recording_id = %s", (existing_id,))
                 cursor.execute("DELETE FROM cam2_detected_objects WHERE recording_id = %s", (existing_id,))
                 cursor.execute("DELETE FROM cam2_analysis_summary WHERE recording_id = %s", (existing_id,))
 
