@@ -8,6 +8,7 @@ import pymysql
 import sys
 
 DB_CONFIG = {
+    'host': 'localhost',
     'database': 'wagodb',
     'user': 'gh',
     'password': 'a12345'

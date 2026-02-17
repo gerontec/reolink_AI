@@ -10,6 +10,7 @@ from typing import Dict, List, Any
 import sys
 
 DB_CONFIG = {
+    'host': 'localhost',
     'database': 'wagodb',
     'user': 'gh',
     'password': 'a12345'
