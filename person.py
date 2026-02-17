@@ -5,6 +5,11 @@ Verarbeitet vorhandene Video/Bild-Dateien mit vollständiger AI-Analyse
 Gesichtserkennung, Objekt-Detektion, Szenen-Erkennung
 """
 
+# Version & Build Info
+VERSION = "1.3.0"
+BUILD_DATE = "2026-02-17"
+SCRIPT_NAME = "Reolink AI Video Processor"
+
 import os
 import sys
 import time
@@ -29,7 +34,7 @@ import torch
 
 # Configuration
 MEDIA_BASE_PATH = "/var/www/web1"  # FTP Upload-Verzeichnis der Reolink Kamera
-ANNOTATED_OUTPUT_PATH = "/var/www/html/web1/annotated"  # Output für annotierte Bilder (Web-Server)
+ANNOTATED_OUTPUT_PATH = "/var/www/web1/annotated"  # Output für annotierte Bilder
 DB_CONFIG = {
     'host': 'localhost',
     'database': 'wagodb',
@@ -58,6 +63,8 @@ logger = logging.getLogger(__name__)
 
 def check_gpu_availability():
     """Überprüft GPU-Verfügbarkeit und zeigt Details"""
+    logger.info("=" * 70)
+    logger.info(f"{SCRIPT_NAME} v{VERSION} (Build: {BUILD_DATE})")
     logger.info("=" * 70)
     logger.info("GPU STATUS CHECK")
     logger.info("=" * 70)
@@ -792,23 +799,68 @@ class FileProcessor:
             logger.error(f"Fehler beim Update des annotierten Bildpfads: {e}")
 
     def parse_filename(self, filename: str) -> Optional[Tuple[str, str, datetime]]:
-        """Parst Dateinamen nach dem Muster: Camera1_00_20260121074033.jpg/mp4"""
-        pattern = r'^(Camera\d+)_(\d{2})_(\d{14})\.(jpg|mp4)$'
-        match = re.match(pattern, filename)
-        
-        if not match:
+        """
+        Parst Dateinamen - unterstützt mehrere Formate von verschiedenen Kameras:
+        Format 1: Camera1_00_20260217104837.jpg (kontinuierlicher Timestamp)
+        Format 2: Camera1_00_20260216_170601_0.jpg (getrennter Timestamp mit Präfix)
+        Format 3: Cam2_20260216_171502_0.jpg (getrennter Timestamp ohne Präfix)
+        """
+
+        # Annotierte Bilder überspringen (sind Output-Dateien) - wird bereits in process_file geprüft
+        if filename.startswith('annotated_') or filename.startswith('video_'):
             return None
-        
-        camera_name = match.group(1)
-        timestamp_str = match.group(3)
-        file_extension = match.group(4)
-        
-        try:
-            timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
-            return (camera_name, file_extension, timestamp)
-        except ValueError as e:
-            logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
-            return None
+
+        logger.debug(f"Versuche zu parsen: {filename}")
+
+        # Format 1: Camera1_00_20260217104837.jpg (kontinuierlicher Timestamp)
+        pattern1 = r'^(Camera\d+)_(\d{2})_(\d{14})\.(jpg|mp4)$'
+        match = re.match(pattern1, filename)
+        if match:
+            camera_name = match.group(1)
+            timestamp_str = match.group(3)
+            file_extension = match.group(4)
+            try:
+                timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
+                return (camera_name, file_extension, timestamp)
+            except ValueError as e:
+                logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
+                return None
+
+        # Format 2: Camera1_00_20260216_170601_0.jpg (getrennter Timestamp mit Präfix)
+        pattern2 = r'^(Camera\d+)_(\d{2})_(\d{8})_(\d{6})(?:_\d+)?\.(jpg|mp4)$'
+        match = re.match(pattern2, filename)
+        if match:
+            camera_name = match.group(1)
+            date_str = match.group(3)  # YYYYMMDD
+            time_str = match.group(4)  # HHMMSS
+            file_extension = match.group(5)
+            timestamp_str = date_str + time_str
+            try:
+                timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
+                return (camera_name, file_extension, timestamp)
+            except ValueError as e:
+                logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
+                return None
+
+        # Format 3: Cam2_20260216_171502_0.jpg (getrennter Timestamp ohne Präfix)
+        pattern3 = r'^(Cam\d+)_(\d{8})_(\d{6})(?:_\d+)?\.(jpg|mp4)$'
+        match = re.match(pattern3, filename)
+        if match:
+            camera_name = match.group(1)
+            date_str = match.group(2)  # YYYYMMDD
+            time_str = match.group(3)  # HHMMSS
+            file_extension = match.group(4)
+            timestamp_str = date_str + time_str
+            try:
+                timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
+                return (camera_name, file_extension, timestamp)
+            except ValueError as e:
+                logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
+                return None
+
+        # Kein bekanntes Format
+        logger.debug(f"  Kein Pattern matched für: {filename}")
+        return None
     
     def file_exists_in_db(self, filepath: str) -> bool:
         """Prüft ob Datei bereits in DB existiert"""
@@ -953,16 +1005,24 @@ class FileProcessor:
     def process_file(self, filepath: Path, analyze: bool = True) -> bool:
         """Verarbeitet eine einzelne Datei mit optionaler AI-Analyse"""
         filename = filepath.name
-        
+
+        # Annotierte Dateien überspringen (ohne Warning)
+        if filename.startswith('annotated_') or filename.startswith('video_'):
+            logger.debug(f"⊘ Übersprungen (Output-Datei): {filename}")
+            self.skipped_count += 1
+            return False
+
         # Dateinamen parsen
         parsed = self.parse_filename(filename)
         if not parsed:
             logger.warning(f"⚠ Übersprungen (ungültiges Format): {filename}")
+            logger.debug(f"  DEBUG: Konnte nicht parsen: {filename}")
             self.skipped_count += 1
             return False
-        
+
         camera_name, file_type, timestamp = parsed
-        
+        logger.debug(f"✓ Geparst: {filename} → Camera: {camera_name}, Type: {file_type}, Time: {timestamp}")
+
         # Prüfen ob bereits in DB
         rel_path = str(filepath.relative_to(self.base_path))
         if self.file_exists_in_db(rel_path):
@@ -1051,7 +1111,8 @@ class FileProcessor:
             return
         
         logger.info("=" * 70)
-        logger.info("Starte Dateiverarbeitung mit AI-Analyse")
+        logger.info(f"Starte Dateiverarbeitung mit AI-Analyse")
+        logger.info(f"Version: {VERSION} | Build: {BUILD_DATE}")
         logger.info(f"AI-Device: {self.ai_analyzer.device}")
         logger.info(f"Bekannte Gesichter: {len(self.ai_analyzer.known_face_names)}")
         
