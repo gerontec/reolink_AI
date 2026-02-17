@@ -50,7 +50,7 @@ if (!$show_all) {
     $sql .= " AND f.person_name = 'Unknown'";
 }
 
-$sql .= " ORDER BY f.detected_at DESC, f.confidence DESC LIMIT ?";
+$sql .= " ORDER BY r.recorded_at DESC LIMIT ?";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute([$min_confidence, $min_size, $limit]);
