@@ -740,11 +740,12 @@ class AIAnalyzer:
 class FileProcessor:
     """Verarbeitet Mediendateien mit AI-Analyse und Datenbank-Integration"""
 
-    def __init__(self, base_path: str, db_config: dict, ai_analyzer: AIAnalyzer, annotated_output_path: str = None):
+    def __init__(self, base_path: str, db_config: dict, ai_analyzer: AIAnalyzer, annotated_output_path: str = None, force: bool = False):
         self.base_path = Path(base_path)
         self.db_config = db_config
         self.db_connection = None
         self.ai_analyzer = ai_analyzer
+        self.force = force  # Re-analyze even if already in DB
 
         # Image Annotator für annotierte Bilder
         if annotated_output_path:
@@ -1056,9 +1057,9 @@ class FileProcessor:
         camera_name, file_type, timestamp = parsed
         logger.debug(f"✓ Geparst: {filename} → Camera: {camera_name}, Type: {file_type}, Time: {timestamp}")
 
-        # Prüfen ob bereits in DB
+        # Prüfen ob bereits in DB (skip unless --force)
         rel_path = str(filepath.relative_to(self.base_path))
-        if self.file_exists_in_db(rel_path):
+        if not self.force and self.file_exists_in_db(rel_path):
             logger.debug(f"⊘ Bereits in DB: {filename}")
             self.skipped_count += 1
             return False
@@ -1344,6 +1345,11 @@ def main():
         action='store_true',
         help='Nur JPG-Dateien verarbeiten (schneller, ~0.1s pro Datei)'
     )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Neu analysieren, auch wenn bereits in DB (speichert neue Embeddings)'
+    )
 
     args = parser.parse_args()
     
@@ -1372,7 +1378,7 @@ def main():
     )
     
     # Verarbeitung starten
-    processor = FileProcessor(args.base_path, DB_CONFIG, ai_analyzer, ANNOTATED_OUTPUT_PATH)
+    processor = FileProcessor(args.base_path, DB_CONFIG, ai_analyzer, ANNOTATED_OUTPUT_PATH, force=args.force)
     processor.process_all_files(
         limit=args.limit,
         analyze=not args.no_analysis,
