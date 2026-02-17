@@ -6,7 +6,7 @@ Gesichtserkennung, Objekt-Detektion, Szenen-Erkennung
 """
 
 # Version & Build Info
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 BUILD_DATE = "2026-02-17"
 SCRIPT_NAME = "Reolink AI Video Processor"
 
@@ -467,8 +467,8 @@ class AIAnalyzer:
         if not self.face_app:
             return faces
 
-        if not self.known_face_encodings:
-            return faces
+        # WICHTIG: Auch Unknown-Gesichter erkennen und speichern!
+        # (Zeilen 470-471 wurden entfernt - Bug-Fix)
 
         try:
             # Face Detection + Embedding mit InsightFace (GPU-beschleunigt!)
