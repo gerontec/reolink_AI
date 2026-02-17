@@ -24,7 +24,7 @@ from mysql.connector import Error as MySQLError
 import cv2
 import numpy as np
 from ultralytics import YOLO
-import face_recognition
+from insightface.app import FaceAnalysis
 import torch
 
 # Configuration
@@ -258,11 +258,12 @@ class AIAnalyzer:
     
     def __init__(self, yolo_model_path: str, known_faces_dir: str, force_gpu: bool = True):
         self.yolo_model = None
+        self.face_app = None
         self.known_faces_dir = Path(known_faces_dir)
         self.known_face_encodings = []
         self.known_face_names = []
         self.force_gpu = force_gpu
-        
+
         # GPU-Device bestimmen
         if torch.cuda.is_available() and force_gpu:
             self.device = 'cuda'
@@ -275,15 +276,18 @@ class AIAnalyzer:
             if force_gpu:
                 logger.error("GPU erzwungen, aber CUDA nicht verfügbar!")
                 sys.exit(1)
-        
+
         logger.info(f"AI-Analyzer initialisiert - Device: {self.device}")
-        
+
         # YOLO Model laden mit expliziter GPU-Zuweisung
         self._load_yolo_model(yolo_model_path)
-        
+
+        # InsightFace laden (GPU-beschleunigt)
+        self._load_insightface()
+
         # Bekannte Gesichter laden
         self._load_known_faces()
-        
+
         # GPU Warmup
         if self.device == 'cuda':
             self._gpu_warmup()
@@ -308,48 +312,89 @@ class AIAnalyzer:
         except Exception as e:
             logger.error(f"YOLO Model konnte nicht geladen werden: {e}")
             raise
-    
+
+    def _load_insightface(self):
+        """Lädt InsightFace für GPU-beschleunigte Gesichtserkennung"""
+        try:
+            logger.info("Lade InsightFace Model...")
+
+            # FaceAnalysis mit GPU
+            providers = ['CUDAExecutionProvider'] if self.device == 'cuda' else ['CPUExecutionProvider']
+            self.face_app = FaceAnalysis(
+                name='buffalo_s',  # Guter Kompromiss zwischen Speed und Accuracy
+                providers=providers
+            )
+
+            # ctx_id = 0 für GPU 0, -1 für CPU
+            ctx_id = self.gpu_id if self.device == 'cuda' else -1
+            self.face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+
+            logger.info(f"✓ InsightFace Model geladen - Device: {self.device}")
+            logger.info(f"  Model: buffalo_s (RetinaFace + ArcFace)")
+            logger.info(f"  Detection Size: 640x640")
+
+        except Exception as e:
+            logger.error(f"InsightFace Model konnte nicht geladen werden: {e}")
+            logger.warning("Face Recognition wird deaktiviert")
+            self.face_app = None
+
     def _gpu_warmup(self):
         """Warmup für GPU - Erste Inferenz ist oft langsam"""
         logger.info("GPU Warmup...")
         try:
             # Dummy-Bild für Warmup
             dummy_image = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
-            
+
             # YOLO Warmup
             _ = self.yolo_model(dummy_image, verbose=False, device=self.device)
-            
-            logger.info("✓ GPU Warmup abgeschlossen")
-            
+
+            # InsightFace Warmup
+            if self.face_app:
+                _ = self.face_app.get(dummy_image)
+
+            logger.info("✓ GPU Warmup abgeschlossen (YOLO + InsightFace)")
+
             # Memory nach Warmup
             if torch.cuda.is_available():
                 allocated = torch.cuda.memory_allocated(0) / 1024**2
                 logger.info(f"GPU Memory nach Warmup: {allocated:.2f} MB")
-                
+
         except Exception as e:
             logger.error(f"GPU Warmup fehlgeschlagen: {e}")
     
     def _load_known_faces(self):
-        """Lädt alle bekannten Gesichter aus dem Verzeichnis"""
+        """Lädt alle bekannten Gesichter aus dem Verzeichnis (InsightFace GPU)"""
+        if not self.face_app:
+            logger.warning("InsightFace nicht verfügbar - Face Recognition deaktiviert")
+            return
+
         if not self.known_faces_dir.exists():
             logger.warning(f"Verzeichnis für bekannte Gesichter nicht gefunden: {self.known_faces_dir}")
             return
-        
+
         face_files = list(self.known_faces_dir.glob("*.jpg")) + list(self.known_faces_dir.glob("*.png"))
-        
+
         if not face_files:
             logger.warning(f"Keine Gesichts-Bilder in {self.known_faces_dir} gefunden")
             return
-        
-        logger.info(f"Lade {len(face_files)} bekannte Gesichter...")
-        
+
+        logger.info(f"Lade {len(face_files)} bekannte Gesichter (GPU)...")
+
         for image_path in face_files:
             try:
-                image = face_recognition.load_image_file(str(image_path))
-                encodings = face_recognition.face_encodings(image)
-                
-                if encodings:
-                    self.known_face_encodings.append(encodings[0])
+                # Bild laden mit OpenCV
+                image = cv2.imread(str(image_path))
+
+                if image is None:
+                    logger.warning(f"  ⚠ Konnte nicht laden: {image_path.name}")
+                    continue
+
+                # Face Detection + Embedding mit InsightFace (GPU)
+                faces = self.face_app.get(image)
+
+                if faces and len(faces) > 0:
+                    # Erstes Gesicht verwenden (sollte nur eins sein)
+                    self.known_face_encodings.append(faces[0].embedding)
                     # Name ist Dateiname ohne Extension
                     name = image_path.stem.replace('_', ' ')
                     self.known_face_names.append(name)
@@ -358,8 +403,8 @@ class AIAnalyzer:
                     logger.warning(f"  ⚠ Kein Gesicht in: {image_path.name}")
             except Exception as e:
                 logger.error(f"  ✗ Fehler bei {image_path.name}: {e}")
-        
-        logger.info(f"✓ {len(self.known_face_names)} bekannte Gesichter geladen")
+
+        logger.info(f"✓ {len(self.known_face_names)} bekannte Gesichter geladen (512-dim ArcFace)")
     
     def get_gpu_stats(self) -> Dict[str, Any]:
         """Gibt aktuelle GPU-Statistiken zurück"""
@@ -393,10 +438,10 @@ class AIAnalyzer:
                 logger.error(f"Bild konnte nicht geladen werden: {image_path}")
                 return results
             
-            # Gesichtserkennung (läuft auf CPU - face_recognition unterstützt kein CUDA)
+            # Gesichtserkennung (läuft auf GPU - InsightFace mit CUDA)
             face_results = self._detect_faces(image)
             results['faces'] = face_results
-            
+
             # Objekt-Detektion mit YOLO (läuft auf GPU)
             yolo_results = self._detect_objects(image)
             results['objects'] = yolo_results['objects']
@@ -409,73 +454,68 @@ class AIAnalyzer:
         return results
     
     def _detect_faces(self, image: np.ndarray) -> List[Dict[str, Any]]:
-        """Erkennt und identifiziert Gesichter im Bild"""
+        """Erkennt und identifiziert Gesichter im Bild (InsightFace GPU)"""
         faces = []
-        
+
+        if not self.face_app:
+            return faces
+
         if not self.known_face_encodings:
             return faces
-        
+
         try:
-            # RGB konvertieren für face_recognition
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
-            # Bild verkleinern für schnellere Verarbeitung
-            small_image = cv2.resize(rgb_image, (0, 0), fx=0.5, fy=0.5)
-            
-            # Gesichter finden (auf CPU - face_recognition nutzt dlib)
-            face_locations = face_recognition.face_locations(small_image, model="hog")
-            
-            if not face_locations:
+            # Face Detection + Embedding mit InsightFace (GPU-beschleunigt!)
+            detected_faces = self.face_app.get(image)
+
+            if not detected_faces:
                 return faces
-            
-            # Gesichts-Encodings erstellen
-            face_encodings = face_recognition.face_encodings(small_image, face_locations)
-            
-            for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-                # Koordinaten zurück skalieren
-                top *= 2
-                right *= 2
-                bottom *= 2
-                left *= 2
-                
-                # Gesicht mit bekannten vergleichen
-                matches = face_recognition.compare_faces(
-                    self.known_face_encodings, 
-                    face_encoding,
-                    tolerance=0.6
-                )
-                
+
+            # Für jedes erkannte Gesicht
+            for face in detected_faces:
+                # Face embedding (512-dim ArcFace)
+                face_embedding = face.embedding
+
+                # Bounding Box (InsightFace gibt direkt die Koordinaten)
+                bbox = face.bbox.astype(int)
+                x1, y1, x2, y2 = bbox
+
+                # Gesicht mit bekannten vergleichen (Cosine Similarity)
                 name = "Unknown"
                 confidence = 0.0
-                
-                if True in matches:
-                    # Face distances berechnen
-                    face_distances = face_recognition.face_distance(
-                        self.known_face_encodings, 
-                        face_encoding
-                    )
-                    best_match_index = np.argmin(face_distances)
-                    
-                    if matches[best_match_index]:
+
+                if len(self.known_face_encodings) > 0:
+                    # Cosine Similarity berechnen (InsightFace embeddings sind normalized)
+                    similarities = []
+                    for known_encoding in self.known_face_encodings:
+                        # Cosine similarity = dot product (wenn normalized)
+                        similarity = np.dot(face_embedding, known_encoding)
+                        similarities.append(similarity)
+
+                    # Bester Match
+                    best_match_index = np.argmax(similarities)
+                    best_similarity = similarities[best_match_index]
+
+                    # Threshold für Match (cosine similarity: 0.4-0.6 ist gut)
+                    if best_similarity > 0.5:
                         name = self.known_face_names[best_match_index]
-                        confidence = 1 - face_distances[best_match_index]
-                
+                        confidence = float(best_similarity)
+
                 faces.append({
                     'name': name,
-                    'confidence': float(confidence),
+                    'confidence': confidence,
                     'bbox': {
-                        'x1': int(left),
-                        'y1': int(top),
-                        'x2': int(right),
-                        'y2': int(bottom)
+                        'x1': int(x1),
+                        'y1': int(y1),
+                        'x2': int(x2),
+                        'y2': int(y2)
                     }
                 })
-                
+
                 logger.debug(f"Gesicht erkannt: {name} (Konfidenz: {confidence:.2f})")
-        
+
         except Exception as e:
             logger.error(f"Fehler bei Gesichtserkennung: {e}")
-        
+
         return faces
     
     def _detect_objects(self, image: np.ndarray) -> Dict[str, Any]:
