@@ -66,8 +66,12 @@ else
     echo -e "  ${YELLOW}⚠ Kein venv gefunden, nutze System-Python${NC}"
 fi
 
-# Crontab-Eintrag mit venv-Python
-CRON_ENTRY="*/2 * * * * cd ${PROJECT_DIR} && ${VENV_PYTHON} person.py --limit 50 >> /var/log/reolink-ai.log 2>&1"
+# CUDA-Pfade für Cron (minimale Umgebung!)
+CUDA_PATH="/usr/local/cuda/bin:/usr/bin:/bin"
+CUDA_LIB="/usr/local/cuda/lib64:/usr/local/cuda/lib"
+
+# Crontab-Eintrag mit venv-Python + CUDA-Umgebung
+CRON_ENTRY="*/2 * * * * PATH=${CUDA_PATH} LD_LIBRARY_PATH=${CUDA_LIB} cd ${PROJECT_DIR} && ${VENV_PYTHON} person.py --limit 50 >> /var/log/reolink-ai.log 2>&1"
 
 # Prüfen ob Eintrag bereits existiert
 if crontab -u ${CRON_USER} -l 2>/dev/null | grep -q "person.py"; then

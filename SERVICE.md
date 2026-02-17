@@ -25,17 +25,21 @@ Das Script:
 ## Crontab-Eintrag
 
 ```cron
-# Alle 2 Minuten (mit venv)
-# Pfad wird von setup-cron.sh automatisch erkannt:
-# - /home/gh/python/reolink_AI (wenn vorhanden)
-# - /home/user/reolink_AI (fallback)
-
-*/2 * * * * cd $PROJECT_DIR && $PROJECT_DIR/venv_py311/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1
+# Alle 2 Minuten (mit venv + CUDA-Pfaden)
+# WICHTIG: Cron hat minimale Umgebung, daher PATH und LD_LIBRARY_PATH setzen!
+*/2 * * * * PATH=/usr/local/cuda/bin:/usr/bin:/bin LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib cd $PROJECT_DIR && $PROJECT_DIR/venv_py311/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1
 ```
 
 **Wichtig:**
-- Nutze den **venv-Python** (nicht System-Python), damit alle Pakete (torch, insightface, etc.) verfügbar sind!
-- Das Setup-Script erkennt automatisch den richtigen Pfad und User (gh oder user)
+- ✅ **venv-Python**: Alle Pakete (torch, insightface, etc.) verfügbar
+- ✅ **CUDA-Pfade**: PATH + LD_LIBRARY_PATH für GPU-Support
+- ✅ **Auto-Detection**: Setup-Script erkennt Pfad und User automatisch
+
+**Warum CUDA-Pfade?**
+Cron läuft in minimaler Umgebung ohne normale Shell-Variablen:
+- Ohne `PATH`: CUDA-Tools nicht gefunden
+- Ohne `LD_LIBRARY_PATH`: PyTorch/InsightFace können CUDA-Libs nicht laden
+- → GPU-Detection schlägt fehl!
 
 ## Warum nur Cron?
 
@@ -205,12 +209,18 @@ cd /home/gh/python/reolink_AI
 source venv_py311/bin/activate
 python3 -c "import torch; print(torch.cuda.is_available())"
 
-# CUDA-Pfad in Crontab setzen (falls nötig)
-crontab -u gh -e
-# Am Anfang hinzufügen:
-PATH=/usr/local/cuda/bin:/usr/bin:/bin
-LD_LIBRARY_PATH=/usr/local/cuda/lib64
+# Falls GPU fehlt: Cron-Umgebung testen (wie Cron es sieht)
+PATH=/usr/local/cuda/bin:/usr/bin:/bin \
+LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib \
+/home/gh/python/reolink_AI/venv_py311/bin/python3 -c "import torch; print(torch.cuda.is_available())"
+
+# Wenn das funktioniert, ist Crontab korrekt
+# Wenn nicht: CUDA-Installation prüfen
+nvidia-smi
+ls -la /usr/local/cuda/lib64/libcudart.so*
 ```
+
+**Wichtig:** Das setup-cron.sh setzt diese Pfade automatisch!
 
 ### MySQL Connection Error
 ```bash
