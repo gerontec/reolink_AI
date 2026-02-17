@@ -2,19 +2,57 @@
 """
 Simple Face Clustering Script
 Durchsucht alle JPGs, erkennt Gesichter und clustert sie nach Ähnlichkeit
+CUDA-Setup wie in person.py
 """
 
-import face_recognition
+import os
+import sys
 import glob
 from collections import defaultdict
 import numpy as np
 from sklearn.cluster import DBSCAN
-import os
+
+# GPU Configuration (wie in person.py)
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
+# AI/ML imports (gleiche Reihenfolge wie person.py)
+import cv2
+import torch
+import face_recognition
 
 # Pfad zu JPGs
 JPG_PATH = '/var/www/web1/2026/02/*.jpg'
 
+def check_gpu():
+    """GPU-Status anzeigen (wie in person.py)"""
+    print("=" * 60)
+    print("GPU STATUS CHECK")
+    print("=" * 60)
+
+    cuda_available = torch.cuda.is_available()
+    print(f"CUDA verfügbar: {cuda_available}")
+
+    if cuda_available:
+        gpu_count = torch.cuda.device_count()
+        print(f"Anzahl GPUs: {gpu_count}")
+
+        for i in range(gpu_count):
+            gpu_name = torch.cuda.get_device_name(i)
+            gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
+            print(f"GPU {i}: {gpu_name} ({gpu_memory:.2f} GB)")
+
+        print(f"CUDA Version: {torch.version.cuda}")
+        print(f"cuDNN Version: {torch.backends.cudnn.version()}")
+    else:
+        print("⚠️  CUDA nicht verfügbar - läuft auf CPU")
+
+    print("=" * 60)
+    print()
+    return cuda_available
+
 def main():
+    # GPU Status prüfen
+    check_gpu()
     # Alle JPGs finden
     jpg_files = sorted(glob.glob(JPG_PATH))
     print(f"🔍 Analysiere {len(jpg_files)} Bilder...\n")
