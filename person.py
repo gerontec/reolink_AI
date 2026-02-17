@@ -28,7 +28,7 @@ import face_recognition
 import torch
 
 # Configuration
-MEDIA_BASE_PATH = "/var/www/web1"
+MEDIA_BASE_PATH = "/var/www/html/web1"
 DB_CONFIG = {
     'host': 'localhost',
     'database': 'wagodb',
