@@ -338,9 +338,10 @@ def print_face_clusters_stats(stats: Dict[str, Any]):
     print_section("🔍 FACE CLUSTERING (Unknown Faces)")
 
     clusters = stats.get('clusters', {})
-    total_clusters = clusters.get('total_clusters', 0)
-    clustered = clusters.get('clustered_faces', 0)
-    unclustered = clusters.get('unclustered_faces', 0)
+    # Handle NULL values from database (when no embeddings exist yet)
+    total_clusters = clusters.get('total_clusters') or 0
+    clustered = clusters.get('clustered_faces') or 0
+    unclustered = clusters.get('unclustered_faces') or 0
 
     if total_clusters > 0 or clustered > 0:
         print(f"Gesamt Cluster:        {total_clusters:,} verschiedene Personen")
