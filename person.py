@@ -806,9 +806,11 @@ class FileProcessor:
         Format 3: Cam2_20260216_171502_0.jpg (getrennter Timestamp ohne Präfix)
         """
 
-        # Annotierte Bilder überspringen (sind Output-Dateien)
+        # Annotierte Bilder überspringen (sind Output-Dateien) - wird bereits in process_file geprüft
         if filename.startswith('annotated_') or filename.startswith('video_'):
             return None
+
+        logger.debug(f"Versuche zu parsen: {filename}")
 
         # Format 1: Camera1_00_20260217104837.jpg (kontinuierlicher Timestamp)
         pattern1 = r'^(Camera\d+)_(\d{2})_(\d{14})\.(jpg|mp4)$'
@@ -857,6 +859,7 @@ class FileProcessor:
                 return None
 
         # Kein bekanntes Format
+        logger.debug(f"  Kein Pattern matched für: {filename}")
         return None
     
     def file_exists_in_db(self, filepath: str) -> bool:
@@ -1002,16 +1005,24 @@ class FileProcessor:
     def process_file(self, filepath: Path, analyze: bool = True) -> bool:
         """Verarbeitet eine einzelne Datei mit optionaler AI-Analyse"""
         filename = filepath.name
-        
+
+        # Annotierte Dateien überspringen (ohne Warning)
+        if filename.startswith('annotated_') or filename.startswith('video_'):
+            logger.debug(f"⊘ Übersprungen (Output-Datei): {filename}")
+            self.skipped_count += 1
+            return False
+
         # Dateinamen parsen
         parsed = self.parse_filename(filename)
         if not parsed:
             logger.warning(f"⚠ Übersprungen (ungültiges Format): {filename}")
+            logger.debug(f"  DEBUG: Konnte nicht parsen: {filename}")
             self.skipped_count += 1
             return False
-        
+
         camera_name, file_type, timestamp = parsed
-        
+        logger.debug(f"✓ Geparst: {filename} → Camera: {camera_name}, Type: {file_type}, Time: {timestamp}")
+
         # Prüfen ob bereits in DB
         rel_path = str(filepath.relative_to(self.base_path))
         if self.file_exists_in_db(rel_path):
