@@ -29,7 +29,7 @@ import torch
 
 # Configuration
 MEDIA_BASE_PATH = "/var/www/web1"  # FTP Upload-Verzeichnis der Reolink Kamera
-ANNOTATED_OUTPUT_PATH = "/var/www/html/web1/annotated"  # Output für annotierte Bilder (Web-Server)
+ANNOTATED_OUTPUT_PATH = "/var/www/web1/annotated"  # Output für annotierte Bilder
 DB_CONFIG = {
     'host': 'localhost',
     'database': 'wagodb',
