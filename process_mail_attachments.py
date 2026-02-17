@@ -17,7 +17,7 @@ import shutil
 # Configuration
 MAILDIR_NEW = Path("/home/gh/Maildir/new")  # User gh's Maildir
 MAILDIR_PROCESSED = Path("/home/gh/python/mail_processed")
-OUTPUT_BASE = Path("/home/gh")
+OUTPUT_BASE = Path("/var/www/web2")
 ALLOWED_EXTENSIONS = {'.mp4', '.jpg', '.jpeg', '.avi', '.mov'}
 
 # Logging
