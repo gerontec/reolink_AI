@@ -884,10 +884,21 @@ class FileProcessor:
             
             # Relativer Pfad zur Basis
             rel_path = str(filepath.relative_to(self.base_path))
-            
+
             # Dateigröße ermitteln
             file_size = filepath.stat().st_size
-            
+
+            # Prüfen ob Datei bereits existiert und alte Analyse-Daten löschen
+            cursor.execute("SELECT id FROM cam2_recordings WHERE file_path = %s", (rel_path,))
+            existing_row = cursor.fetchone()
+            if existing_row:
+                existing_id = existing_row[0]
+                # Alte AI-Analyse Ergebnisse löschen
+                cursor.execute("DELETE FROM cam2_detected_faces WHERE recording_id = %s", (existing_id,))
+                cursor.execute("DELETE FROM cam2_detected_persons WHERE recording_id = %s", (existing_id,))
+                cursor.execute("DELETE FROM cam2_detected_objects WHERE recording_id = %s", (existing_id,))
+                cursor.execute("DELETE FROM cam2_analysis_summary WHERE recording_id = %s", (existing_id,))
+
             # Haupt-Recording eintragen (oder updaten wenn bereits vorhanden)
             query = """
                 INSERT INTO cam2_recordings
@@ -915,12 +926,6 @@ class FileProcessor:
             if recording_id == 0:
                 cursor.execute("SELECT id FROM cam2_recordings WHERE file_path = %s", (rel_path,))
                 recording_id = cursor.fetchone()[0]
-
-                # Alte AI-Analyse Ergebnisse löschen vor neuem Insert
-                cursor.execute("DELETE FROM cam2_detected_faces WHERE recording_id = %s", (recording_id,))
-                cursor.execute("DELETE FROM cam2_detected_persons WHERE recording_id = %s", (recording_id,))
-                cursor.execute("DELETE FROM cam2_detected_objects WHERE recording_id = %s", (recording_id,))
-                cursor.execute("DELETE FROM cam2_analysis_summary WHERE recording_id = %s", (recording_id,))
             
             # AI-Analyse Ergebnisse eintragen
             if analysis_results:
