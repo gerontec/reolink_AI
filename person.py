@@ -408,57 +408,88 @@ class AIAnalyzer:
             
             frame_count = 0
             analyzed_count = 0
-            
-            # Sets für eindeutige Detektionen
+
+            # Track best frame for complete object data with confidence scores
             unique_faces = set()
-            unique_objects = set()
+            unique_objects = set()  # Still track unique classes for logging
             unique_vehicles = set()
-            
+            best_frame_score = 0
+            best_frame_results = None  # Store complete detections from best frame
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
+
                 frame_count += 1
-                
+
                 # Nur jeden N-ten Frame analysieren
                 if frame_count % sample_rate != 0:
                     continue
-                
+
                 analyzed_count += 1
-                
+
                 # Frame analysieren
                 frame_results = self.analyze_image_array(frame)
-                
+
+                # Calculate frame score (faces + persons have higher priority)
+                frame_score = len(frame_results['faces']) * 10 + frame_results['persons'] * 5 + len(frame_results['objects'])
+
+                # Track best frame (for complete object data with confidence)
+                if frame_score > best_frame_score:
+                    best_frame_score = frame_score
+                    # Store COMPLETE detections (with confidence and bbox) from best frame
+                    best_frame_results = {
+                        'objects': frame_results['objects'].copy(),
+                        'vehicles': frame_results['vehicles'].copy(),
+                        'persons': frame_results['persons']
+                    }
+                    logger.debug(f"New best frame: #{frame_count}, Score: {frame_score}")
+
                 # Gesichter sammeln
                 for face in frame_results['faces']:
                     if face['name'] != "Unknown":
                         unique_faces.add(face['name'])
-                
-                # Objekte sammeln
+
+                # Objekte sammeln (für Statistik/Logging)
                 for obj in frame_results['objects']:
                     unique_objects.add(obj['class'])
-                
-                # Fahrzeuge sammeln
+
+                # Fahrzeuge sammeln (für Statistik/Logging)
                 for vehicle in frame_results['vehicles']:
                     unique_vehicles.add(vehicle['class'])
-                
+
                 # Max Personen tracken
                 if frame_results['persons'] > results['max_persons']:
                     results['max_persons'] = frame_results['persons']
-                
+
                 if analyzed_count % 10 == 0:
                     logger.debug(f"Video-Analyse: {analyzed_count} Frames analysiert")
-            
+
             cap.release()
-            
+
             results['analyzed_frames'] = analyzed_count
             results['faces'] = [{'name': name} for name in unique_faces]
-            results['objects'] = [{'class': obj} for obj in unique_objects]
-            results['vehicles'] = [{'class': veh} for veh in unique_vehicles]
+
+            # Use detections from BEST frame (with confidence and bbox data!)
+            if best_frame_results:
+                results['objects'] = best_frame_results['objects']
+                results['vehicles'] = best_frame_results['vehicles']
+                logger.debug(f"Using {len(best_frame_results['objects'])} objects from best frame")
+            else:
+                # Fallback: No best frame found (empty video)
+                # Return empty lists to avoid storing objects without confidence
+                results['objects'] = []
+                results['vehicles'] = []
+                if unique_objects or unique_vehicles:
+                    logger.warning(f"Video {video_path}: Objects detected ({unique_objects}) but no best frame found - data incomplete")
             
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
                        f"{len(unique_faces)} Gesichter, {results['max_persons']} max. Personen")
+
+            # Debug: Log object confidence scores
+            for i, obj in enumerate(results.get('objects', [])):
+                logger.debug(f"  Object {i}: {obj.get('class')}, confidence={'confidence' in obj and obj['confidence'] or 'MISSING'}")
         
         except Exception as e:
             logger.error(f"Fehler bei Video-Analyse {video_path}: {e}")
@@ -629,8 +660,12 @@ class FileProcessor:
             
             # Objekte eintragen
             for obj in results.get('objects', []):
+                # Debug logging to track confidence values
+                confidence = obj.get('confidence', 0.0)
+                logger.debug(f"Inserting object: class={obj.get('class')}, confidence={confidence}, has_key={'confidence' in obj}")
+
                 query = """
-                    INSERT INTO cam_detected_objects 
+                    INSERT INTO cam_detected_objects
                     (recording_id, object_class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """
@@ -638,7 +673,7 @@ class FileProcessor:
                 values = (
                     recording_id,
                     obj.get('class', 'unknown'),
-                    obj.get('confidence', 0.0),
+                    confidence,
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
