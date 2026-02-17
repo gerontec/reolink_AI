@@ -33,10 +33,25 @@ Führt **cam2_cluster_faces.py** aus:
 
 ---
 
-### 3️⃣ `run_chain.sh` - Komplette Verarbeitungskette ⭐ **EMPFOHLEN**
-Führt beide Schritte nacheinander aus:
+### 3️⃣ `run_report.sh` - Statistics Report
+Führt **cam2_report.py** aus:
+- ✅ Zeigt Gesamt-Statistiken
+- ✅ Top Personen & Cluster
+- ✅ Zeitliche Verteilung
+- ✅ Datenbank-Analysen
+
+**Aufruf:**
+```bash
+./run_report.sh
+```
+
+---
+
+### 4️⃣ `run_chain.sh` - Komplette Verarbeitungskette ⭐ **EMPFOHLEN**
+Führt alle 3 Schritte nacheinander aus:
 1. Person Detection
 2. Face Clustering (nur wenn Step 1 erfolgreich)
+3. Statistics Report
 
 **Parameter:**
 ```bash

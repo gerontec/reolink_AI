@@ -3,6 +3,7 @@
 # Complete AI Processing Chain
 # 1. Person Detection (person.py)
 # 2. Face Clustering (cam2_cluster_faces.py)
+# 3. Statistics Report (cam2_report.py)
 ################################################################################
 
 # Script Directory
@@ -66,7 +67,7 @@ START_TIME=$(date +%s)
 # STEP 1: Person Detection
 # ============================================================================
 echo "┌──────────────────────────────────────────────────────────────────────────┐" | tee -a "${CHAIN_LOG}"
-echo "│ STEP 1/2: Person Detection                                               │" | tee -a "${CHAIN_LOG}"
+echo "│ STEP 1/3: Person Detection                                               │" | tee -a "${CHAIN_LOG}"
 echo "└──────────────────────────────────────────────────────────────────────────┘" | tee -a "${CHAIN_LOG}"
 echo "" | tee -a "${CHAIN_LOG}"
 
@@ -87,7 +88,7 @@ echo "" | tee -a "${CHAIN_LOG}"
 # STEP 2: Face Clustering (nur wenn neue Gesichter erkannt wurden)
 # ============================================================================
 echo "┌──────────────────────────────────────────────────────────────────────────┐" | tee -a "${CHAIN_LOG}"
-echo "│ STEP 2/2: Face Clustering                                                │" | tee -a "${CHAIN_LOG}"
+echo "│ STEP 2/3: Face Clustering                                                │" | tee -a "${CHAIN_LOG}"
 echo "└──────────────────────────────────────────────────────────────────────────┘" | tee -a "${CHAIN_LOG}"
 echo "" | tee -a "${CHAIN_LOG}"
 
@@ -97,9 +98,29 @@ CLUSTER_EXIT=$?
 echo "" | tee -a "${CHAIN_LOG}"
 if [ ${CLUSTER_EXIT} -ne 0 ]; then
     echo "⚠️  Face Clustering fehlgeschlagen (Exit Code: ${CLUSTER_EXIT})" | tee -a "${CHAIN_LOG}"
-    echo "   Chain wird trotzdem als erfolgreich markiert" | tee -a "${CHAIN_LOG}"
+    echo "   Chain wird trotzdem fortgesetzt" | tee -a "${CHAIN_LOG}"
 else
     echo "✅ Face Clustering erfolgreich" | tee -a "${CHAIN_LOG}"
+fi
+echo "" | tee -a "${CHAIN_LOG}"
+
+# ============================================================================
+# STEP 3: Statistics Report
+# ============================================================================
+echo "┌──────────────────────────────────────────────────────────────────────────┐" | tee -a "${CHAIN_LOG}"
+echo "│ STEP 3/3: Statistics Report                                              │" | tee -a "${CHAIN_LOG}"
+echo "└──────────────────────────────────────────────────────────────────────────┘" | tee -a "${CHAIN_LOG}"
+echo "" | tee -a "${CHAIN_LOG}"
+
+"${SCRIPT_DIR}/run_report.sh" 2>&1 | tee -a "${CHAIN_LOG}"
+REPORT_EXIT=$?
+
+echo "" | tee -a "${CHAIN_LOG}"
+if [ ${REPORT_EXIT} -ne 0 ]; then
+    echo "⚠️  Statistics Report fehlgeschlagen (Exit Code: ${REPORT_EXIT})" | tee -a "${CHAIN_LOG}"
+    echo "   Chain wird trotzdem als erfolgreich markiert" | tee -a "${CHAIN_LOG}"
+else
+    echo "✅ Statistics Report erfolgreich" | tee -a "${CHAIN_LOG}"
 fi
 
 # ============================================================================
@@ -118,8 +139,9 @@ echo "" | tee -a "${CHAIN_LOG}"
 echo "Gesamt-Dauer: ${MINUTES}m ${SECONDS}s" | tee -a "${CHAIN_LOG}"
 echo "" | tee -a "${CHAIN_LOG}"
 echo "Status:" | tee -a "${CHAIN_LOG}"
-echo "  Step 1 (Person Detection): $([ ${PERSON_EXIT} -eq 0 ] && echo '✅ OK' || echo '❌ FEHLER')" | tee -a "${CHAIN_LOG}"
-echo "  Step 2 (Face Clustering):  $([ ${CLUSTER_EXIT} -eq 0 ] && echo '✅ OK' || echo '⚠️  FEHLER')" | tee -a "${CHAIN_LOG}"
+echo "  Step 1 (Person Detection):  $([ ${PERSON_EXIT} -eq 0 ] && echo '✅ OK' || echo '❌ FEHLER')" | tee -a "${CHAIN_LOG}"
+echo "  Step 2 (Face Clustering):   $([ ${CLUSTER_EXIT} -eq 0 ] && echo '✅ OK' || echo '⚠️  FEHLER')" | tee -a "${CHAIN_LOG}"
+echo "  Step 3 (Statistics Report): $([ ${REPORT_EXIT} -eq 0 ] && echo '✅ OK' || echo '⚠️  FEHLER')" | tee -a "${CHAIN_LOG}"
 echo "" | tee -a "${CHAIN_LOG}"
 echo "Komplettes Log: ${CHAIN_LOG}" | tee -a "${CHAIN_LOG}"
 echo "##############################################################################" | tee -a "${CHAIN_LOG}"
