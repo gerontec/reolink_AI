@@ -32,35 +32,38 @@ def test_onvif_connection():
         # Create ONVIF camera client
         logger.info(f"📡 Connecting to {CAMERA_IP}:{ONVIF_PORT}")
 
-        # Use built-in WSDL files from python-onvif-zeep
+        # Find WSDL directory from onvif-zeep package
         import os
-        import site
+        try:
+            import onvif
+            onvif_path = os.path.dirname(onvif.__file__)
+            wsdl_dir = os.path.join(onvif_path, 'wsdl')
 
-        # Try to find WSDL directory
-        wsdl_dir = None
-        for site_dir in site.getsitepackages():
-            potential_wsdl = os.path.join(site_dir, 'wsdl')
-            if os.path.exists(potential_wsdl):
-                wsdl_dir = potential_wsdl
-                break
-
-        if not wsdl_dir:
-            # Fallback: let onvif-zeep use its default
-            logger.info("Using default WSDL location")
+            if os.path.exists(wsdl_dir):
+                logger.info(f"✅ Found WSDL at: {wsdl_dir}")
+                mycam = ONVIFCamera(
+                    CAMERA_IP,
+                    ONVIF_PORT,
+                    USERNAME,
+                    PASSWORD,
+                    wsdl_dir
+                )
+            else:
+                logger.info("⚠️  WSDL not found, using defaults")
+                mycam = ONVIFCamera(
+                    CAMERA_IP,
+                    ONVIF_PORT,
+                    USERNAME,
+                    PASSWORD
+                )
+        except Exception as e:
+            logger.warning(f"WSDL detection failed: {e}")
+            logger.info("Trying without WSDL path...")
             mycam = ONVIFCamera(
                 CAMERA_IP,
                 ONVIF_PORT,
                 USERNAME,
                 PASSWORD
-            )
-        else:
-            logger.info(f"Using WSDL from: {wsdl_dir}")
-            mycam = ONVIFCamera(
-                CAMERA_IP,
-                ONVIF_PORT,
-                USERNAME,
-                PASSWORD,
-                wsdl_dir
             )
 
         # Get device information
