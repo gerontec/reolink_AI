@@ -7,7 +7,7 @@ Gesichtserkennung, Objekt-Detektion, Szenen-Erkennung
 
 # Version & Build Info
 VERSION = "1.4.0"
-BUILD_DATE = "2026-02-17"
+BUILD_TIMESTAMP = "2026-02-17 22:30:00"
 SCRIPT_NAME = "Reolink AI Video Processor"
 
 import os
@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 def check_gpu_availability():
     """Überprüft GPU-Verfügbarkeit und zeigt Details"""
     logger.info("=" * 70)
-    logger.info(f"{SCRIPT_NAME} v{VERSION} (Build: {BUILD_DATE})")
+    logger.info(f"{SCRIPT_NAME} v{VERSION} (Build: {BUILD_TIMESTAMP})")
     logger.info("=" * 70)
     logger.info("GPU STATUS CHECK")
     logger.info("=" * 70)
@@ -1112,7 +1112,7 @@ class FileProcessor:
         
         logger.info("=" * 70)
         logger.info(f"Starte Dateiverarbeitung mit AI-Analyse")
-        logger.info(f"Version: {VERSION} | Build: {BUILD_DATE}")
+        logger.info(f"Version: {VERSION} | Build: {BUILD_TIMESTAMP}")
         logger.info(f"AI-Device: {self.ai_analyzer.device}")
         logger.info(f"Bekannte Gesichter: {len(self.ai_analyzer.known_face_names)}")
         
