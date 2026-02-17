@@ -45,8 +45,7 @@ $sql = "
         (SELECT COUNT(*) FROM cam2_detected_faces WHERE face_cluster_id = f.face_cluster_id) as cluster_size
     FROM cam2_detected_faces f
     JOIN cam2_recordings r ON f.recording_id = r.id
-    WHERE (f.person_name = 'Unknown' OR f.confidence >= ?)
-      AND (f.bbox_x2 - f.bbox_x1) >= ?
+    WHERE (f.bbox_x2 - f.bbox_x1) >= ?
       AND f.face_cluster_id IS NOT NULL
 ";
 
@@ -54,10 +53,13 @@ if (!$show_all) {
     $sql .= " AND f.person_name = 'Unknown'";
 }
 
+// Konfidenz-Filter nur für Unknown anwenden (benannte haben oft 0.0 von manueller Benennung)
+$sql .= " AND (f.person_name != 'Unknown' OR f.confidence >= ?)";
+
 $sql .= " ORDER BY r.recorded_at DESC LIMIT ?";
 
 $stmt = $pdo->prepare($sql);
-$stmt->execute([$min_confidence, $min_size, $limit]);
+$stmt->execute([$min_size, $min_confidence, $limit]);
 $persons = $stmt->fetchAll();
 
 // Vorschläge für Autocomplete (Alle bereits vergebenen Namen)
