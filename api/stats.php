@@ -25,13 +25,13 @@ try {
     $stats['named_persons'] = $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam2_detected_faces WHERE person_name != 'Unknown'")->fetchColumn();
     
     // Aufnahmen
-    $stats['total_recordings'] = $pdo->query("SELECT COUNT(*) FROM cam_recordings")->fetchColumn();
-    $stats['total_images'] = $pdo->query("SELECT COUNT(*) FROM cam_recordings WHERE file_type = 'jpg'")->fetchColumn();
-    $stats['total_videos'] = $pdo->query("SELECT COUNT(*) FROM cam_recordings WHERE file_type = 'mp4'")->fetchColumn();
-    
+    $stats['total_recordings'] = $pdo->query("SELECT COUNT(*) FROM cam2_recordings")->fetchColumn();
+    $stats['total_images'] = $pdo->query("SELECT COUNT(*) FROM cam2_recordings WHERE file_type = 'jpg'")->fetchColumn();
+    $stats['total_videos'] = $pdo->query("SELECT COUNT(*) FROM cam2_recordings WHERE file_type = 'mp4'")->fetchColumn();
+
     // Objekte
-    $stats['total_objects'] = $pdo->query("SELECT COUNT(*) FROM cam_detected_objects")->fetchColumn();
-    $stats['total_vehicles'] = $pdo->query("SELECT COUNT(*) FROM cam_detected_objects WHERE object_class IN ('car', 'truck', 'bus', 'motorcycle', 'bicycle')")->fetchColumn();
+    $stats['total_objects'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_objects")->fetchColumn();
+    $stats['total_vehicles'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_objects WHERE object_class IN ('car', 'truck', 'bus', 'motorcycle', 'bicycle')")->fetchColumn();
     
     // Top Personen
     $top_persons = $pdo->query("
@@ -46,31 +46,31 @@ try {
     
     // Top Objekte
     $top_objects = $pdo->query("
-        SELECT object_class, COUNT(*) as count 
-        FROM cam_detected_objects 
-        GROUP BY object_class 
-        ORDER BY count DESC 
+        SELECT object_class, COUNT(*) as count
+        FROM cam2_detected_objects
+        GROUP BY object_class
+        ORDER BY count DESC
         LIMIT 10
     ")->fetchAll();
     $stats['top_objects'] = $top_objects;
     
     // Aktivität pro Kamera
     $camera_activity = $pdo->query("
-        SELECT camera_name, COUNT(*) as recordings 
-        FROM cam_recordings 
-        GROUP BY camera_name 
+        SELECT camera_name, COUNT(*) as recordings
+        FROM cam2_recordings
+        GROUP BY camera_name
         ORDER BY recordings DESC
     ")->fetchAll();
     $stats['camera_activity'] = $camera_activity;
     
     // Zeitliche Verteilung (letzte 7 Tage)
     $daily_stats = $pdo->query("
-        SELECT 
+        SELECT
             DATE(recorded_at) as date,
             COUNT(*) as recordings,
             SUM(CASE WHEN file_type = 'jpg' THEN 1 ELSE 0 END) as images,
             SUM(CASE WHEN file_type = 'mp4' THEN 1 ELSE 0 END) as videos
-        FROM cam_recordings
+        FROM cam2_recordings
         WHERE recorded_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
         GROUP BY DATE(recorded_at)
         ORDER BY date DESC

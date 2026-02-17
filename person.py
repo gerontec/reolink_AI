@@ -579,7 +579,7 @@ class FileProcessor:
         """Prüft ob Datei bereits in DB existiert"""
         try:
             cursor = self.db_connection.cursor()
-            query = "SELECT COUNT(*) FROM cam_recordings WHERE file_path = %s"
+            query = "SELECT COUNT(*) FROM cam2_recordings WHERE file_path = %s"
             cursor.execute(query, (filepath,))
             count = cursor.fetchone()[0]
             cursor.close()
@@ -603,8 +603,8 @@ class FileProcessor:
             
             # Haupt-Recording eintragen
             query = """
-                INSERT INTO cam_recordings 
-                (camera_name, file_path, file_type, file_size, recorded_at, 
+                INSERT INTO cam2_recordings
+                (camera_name, file_path, file_type, file_size, recorded_at,
                  analyzed, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
             """
@@ -642,7 +642,7 @@ class FileProcessor:
             # Gesichter eintragen
             for face in results.get('faces', []):
                 query = """
-                    INSERT INTO cam_detected_faces 
+                    INSERT INTO cam2_detected_faces
                     (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """
@@ -665,7 +665,7 @@ class FileProcessor:
                 logger.debug(f"Inserting object: class={obj.get('class')}, confidence={confidence}, has_key={'confidence' in obj}")
 
                 query = """
-                    INSERT INTO cam_detected_objects
+                    INSERT INTO cam2_detected_objects
                     (recording_id, object_class, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """
@@ -683,8 +683,8 @@ class FileProcessor:
             
             # Zusammenfassung eintragen
             query = """
-                INSERT INTO cam_analysis_summary 
-                (recording_id, total_faces, total_objects, total_vehicles, 
+                INSERT INTO cam2_analysis_summary
+                (recording_id, total_faces, total_objects, total_vehicles,
                  max_persons, gpu_used, analyzed_at)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
             """
@@ -838,9 +838,9 @@ class FileProcessor:
 
 
 def create_database_schema():
-    """Erstellt die notwendigen Datenbanktabellen"""
+    """Erstellt die notwendigen Datenbanktabellen (cam2_* modern schema)"""
     schema = """
-    CREATE TABLE IF NOT EXISTS cam_recordings (
+    CREATE TABLE IF NOT EXISTS cam2_recordings (
         id INT AUTO_INCREMENT PRIMARY KEY,
         camera_name VARCHAR(50) NOT NULL,
         file_path VARCHAR(255) NOT NULL UNIQUE,
@@ -854,8 +854,8 @@ def create_database_schema():
         INDEX idx_analyzed (analyzed),
         INDEX idx_type (file_type)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    
-    CREATE TABLE IF NOT EXISTS cam_detected_faces (
+
+    CREATE TABLE IF NOT EXISTS cam2_detected_faces (
         id INT AUTO_INCREMENT PRIMARY KEY,
         recording_id INT NOT NULL,
         person_name VARCHAR(100) NOT NULL,
@@ -865,12 +865,12 @@ def create_database_schema():
         bbox_x2 INT,
         bbox_y2 INT,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (recording_id) REFERENCES cam_recordings(id) ON DELETE CASCADE,
+        FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_person (person_name),
         INDEX idx_recording (recording_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    
-    CREATE TABLE IF NOT EXISTS cam_detected_objects (
+
+    CREATE TABLE IF NOT EXISTS cam2_detected_objects (
         id INT AUTO_INCREMENT PRIMARY KEY,
         recording_id INT NOT NULL,
         object_class VARCHAR(50) NOT NULL,
@@ -879,13 +879,15 @@ def create_database_schema():
         bbox_y1 INT,
         bbox_x2 INT,
         bbox_y2 INT,
+        parking_spot_id INT DEFAULT NULL,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (recording_id) REFERENCES cam_recordings(id) ON DELETE CASCADE,
+        FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_class (object_class),
-        INDEX idx_recording (recording_id)
+        INDEX idx_recording (recording_id),
+        INDEX idx_parking_spot (parking_spot_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    
-    CREATE TABLE IF NOT EXISTS cam_analysis_summary (
+
+    CREATE TABLE IF NOT EXISTS cam2_analysis_summary (
         id INT AUTO_INCREMENT PRIMARY KEY,
         recording_id INT NOT NULL UNIQUE,
         total_faces INT DEFAULT 0,
@@ -893,9 +895,11 @@ def create_database_schema():
         total_vehicles INT DEFAULT 0,
         max_persons INT DEFAULT 0,
         gpu_used BOOLEAN DEFAULT FALSE,
+        scene_category VARCHAR(50) DEFAULT NULL,
         analyzed_at DATETIME NOT NULL,
-        FOREIGN KEY (recording_id) REFERENCES cam_recordings(id) ON DELETE CASCADE,
-        INDEX idx_recording (recording_id)
+        FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
+        INDEX idx_recording (recording_id),
+        INDEX idx_scene (scene_category)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
     

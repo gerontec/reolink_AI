@@ -1,4 +1,4 @@
-#!/home/gh/python/venv_py311/bin/python3
+#!/usr/bin/env python3
 """
 Camera Database Report - Generiert Reports aus allen Kamera-Tabellen
 Zeigt Statistiken zu Aufnahmen, erkannten Gesichtern, Objekten und Fahrzeugen
