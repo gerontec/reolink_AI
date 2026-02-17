@@ -792,23 +792,65 @@ class FileProcessor:
             logger.error(f"Fehler beim Update des annotierten Bildpfads: {e}")
 
     def parse_filename(self, filename: str) -> Optional[Tuple[str, str, datetime]]:
-        """Parst Dateinamen nach dem Muster: Camera1_00_20260121074033.jpg/mp4"""
-        pattern = r'^(Camera\d+)_(\d{2})_(\d{14})\.(jpg|mp4)$'
-        match = re.match(pattern, filename)
-        
-        if not match:
+        """
+        Parst Dateinamen - unterstützt mehrere Formate von verschiedenen Kameras:
+        Format 1: Camera1_00_20260217104837.jpg (kontinuierlicher Timestamp)
+        Format 2: Camera1_00_20260216_170601_0.jpg (getrennter Timestamp mit Präfix)
+        Format 3: Cam2_20260216_171502_0.jpg (getrennter Timestamp ohne Präfix)
+        """
+
+        # Annotierte Bilder überspringen (sind Output-Dateien)
+        if filename.startswith('annotated_') or filename.startswith('video_'):
             return None
-        
-        camera_name = match.group(1)
-        timestamp_str = match.group(3)
-        file_extension = match.group(4)
-        
-        try:
-            timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
-            return (camera_name, file_extension, timestamp)
-        except ValueError as e:
-            logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
-            return None
+
+        # Format 1: Camera1_00_20260217104837.jpg (kontinuierlicher Timestamp)
+        pattern1 = r'^(Camera\d+)_(\d{2})_(\d{14})\.(jpg|mp4)$'
+        match = re.match(pattern1, filename)
+        if match:
+            camera_name = match.group(1)
+            timestamp_str = match.group(3)
+            file_extension = match.group(4)
+            try:
+                timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
+                return (camera_name, file_extension, timestamp)
+            except ValueError as e:
+                logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
+                return None
+
+        # Format 2: Camera1_00_20260216_170601_0.jpg (getrennter Timestamp mit Präfix)
+        pattern2 = r'^(Camera\d+)_(\d{2})_(\d{8})_(\d{6})(?:_\d+)?\.(jpg|mp4)$'
+        match = re.match(pattern2, filename)
+        if match:
+            camera_name = match.group(1)
+            date_str = match.group(3)  # YYYYMMDD
+            time_str = match.group(4)  # HHMMSS
+            file_extension = match.group(5)
+            timestamp_str = date_str + time_str
+            try:
+                timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
+                return (camera_name, file_extension, timestamp)
+            except ValueError as e:
+                logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
+                return None
+
+        # Format 3: Cam2_20260216_171502_0.jpg (getrennter Timestamp ohne Präfix)
+        pattern3 = r'^(Cam\d+)_(\d{8})_(\d{6})(?:_\d+)?\.(jpg|mp4)$'
+        match = re.match(pattern3, filename)
+        if match:
+            camera_name = match.group(1)
+            date_str = match.group(2)  # YYYYMMDD
+            time_str = match.group(3)  # HHMMSS
+            file_extension = match.group(4)
+            timestamp_str = date_str + time_str
+            try:
+                timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M%S')
+                return (camera_name, file_extension, timestamp)
+            except ValueError as e:
+                logger.error(f"Zeitstempel-Parsing fehlgeschlagen für {filename}: {e}")
+                return None
+
+        # Kein bekanntes Format
+        return None
     
     def file_exists_in_db(self, filepath: str) -> bool:
         """Prüft ob Datei bereits in DB existiert"""
