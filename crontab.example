@@ -26,14 +26,21 @@
 # ==============================================================================
 # Führt beide Schritte nacheinander aus
 # EMPFOHLEN für Produktiv-Betrieb
+#
+# ⚠️  WICHTIG: Lock-Files verhindern parallele Ausführung!
+#    Wenn noch eine Instanz läuft, wird die neue NICHT gestartet.
+#    Das verhindert CUDA Out of Memory Fehler.
 
 # Täglich um 2:00 Uhr nachts (volle Verarbeitung)
-0 2 * * * /home/gh/python/reolink_AI/run_chain.sh
+#0 2 * * * /home/gh/python/reolink_AI/run_chain.sh
 
-# Alle 6 Stunden (nur neue Dateien)
-#0 */6 * * * /home/gh/python/reolink_AI/run_chain.sh --limit 1000
+# Alle 6 Stunden (nur neue Dateien) - EMPFOHLEN
+0 */6 * * * /home/gh/python/reolink_AI/run_chain.sh --limit 1000
 
-# Stündlich (nur letzte 100 Dateien)
+# Alle 2 Stunden (kleine Batches)
+#0 */2 * * * /home/gh/python/reolink_AI/run_chain.sh --limit 200
+
+# ⚠️  NICHT empfohlen: Stündlich (kann zu Überlappung führen!)
 #0 * * * * /home/gh/python/reolink_AI/run_chain.sh --limit 100
 
 

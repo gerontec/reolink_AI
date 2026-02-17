@@ -14,6 +14,42 @@ VENV_BIN="/home/gh/python/venv_py311/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PERSON_SCRIPT="${SCRIPT_DIR}/person.py"
 
+# ============================================================================
+# LOCK-FILE Mechanismus (verhindert parallele Ausführung)
+# ============================================================================
+LOCK_FILE="${SCRIPT_DIR}/.person.lock"
+PID_FILE="${SCRIPT_DIR}/.person.pid"
+
+# Prüfe ob bereits eine Instanz läuft
+if [ -f "${LOCK_FILE}" ]; then
+    # Prüfe ob der Prozess noch existiert
+    if [ -f "${PID_FILE}" ]; then
+        OLD_PID=$(cat "${PID_FILE}")
+        if kill -0 "${OLD_PID}" 2>/dev/null; then
+            echo "❌ Person Detection läuft bereits (PID: ${OLD_PID})"
+            echo "   Lock-File: ${LOCK_FILE}"
+            echo "   Falls der Prozess hängt: kill ${OLD_PID}"
+            exit 1
+        else
+            echo "⚠️  Stale Lock-File gefunden (Prozess ${OLD_PID} existiert nicht mehr)"
+            echo "   Entferne Lock-File und starte neu..."
+            rm -f "${LOCK_FILE}" "${PID_FILE}"
+        fi
+    fi
+fi
+
+# Lock-File erstellen
+echo $$ > "${PID_FILE}"
+touch "${LOCK_FILE}"
+
+# Cleanup-Funktion (wird bei Exit aufgerufen)
+cleanup() {
+    rm -f "${LOCK_FILE}" "${PID_FILE}"
+}
+
+# Cleanup bei Exit, Interrupt, Terminate
+trap cleanup EXIT INT TERM
+
 # Log-Datei (wird überschrieben)
 LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOG_DIR}"

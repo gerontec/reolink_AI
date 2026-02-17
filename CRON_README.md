@@ -48,6 +48,21 @@ Führt beide Schritte nacheinander aus:
 
 ## ⚙️ Installation (Crontab)
 
+### ⚠️ WICHTIG: Lock-File Schutz aktiviert!
+
+Alle Skripte haben jetzt einen **Lock-File Mechanismus**:
+- ✅ Verhindert parallele Ausführung
+- ✅ Prüft ob Prozess noch läuft
+- ✅ Entfernt stale Locks automatisch
+- ✅ Verhindert CUDA Out of Memory!
+
+**Wenn bereits eine Instanz läuft:**
+```
+❌ Chain läuft bereits (PID: 12345)
+   Lock-File: /home/gh/python/reolink_AI/.chain.lock
+   Falls der Prozess hängt: kill 12345
+```
+
 ### Schritt 1: Pfade anpassen
 Bearbeite `crontab.example` und ersetze `/home/gh/python` mit deinem Pfad:
 ```bash
@@ -139,6 +154,39 @@ Gesamt-Dauer: 2m 15s
 ---
 
 ## 🔧 Troubleshooting
+
+### Problem: "CUDA out of memory" / Mehrere Prozesse laufen
+**Symptom:**
+```
+torch.cuda.OutOfMemoryError: CUDA out of memory
+Process 2046478 has 1.69 GiB memory in use
+Process 2046929 has 1.69 GiB memory in use
+Process 2047512 has 1.70 GiB memory in use
+```
+
+**Ursache:** Mehrere Instanzen laufen parallel!
+
+**Lösung:**
+```bash
+# 1. Status prüfen
+./status.sh
+
+# 2. Alle Python-Prozesse stoppen
+killall python3
+
+# 3. Stale Locks entfernen
+rm .*.lock .*.pid
+
+# 4. Crontab prüfen (nicht jede Minute!)
+crontab -l
+
+# 5. Lock-File Schutz ist jetzt aktiv ✅
+```
+
+**Verhindert durch:**
+- ✅ Lock-Files in allen Skripten
+- ✅ Prozess-Prüfung vor Start
+- ✅ Automatische Cleanup bei Exit
 
 ### Problem: "CUDA not available"
 **Lösung:** Prüfe CUDA-Installation:
