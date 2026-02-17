@@ -8,6 +8,8 @@ CUDA-Setup wie in person.py
 import os
 import sys
 import glob
+import time
+from datetime import datetime
 from collections import defaultdict
 import numpy as np
 from sklearn.cluster import DBSCAN
@@ -53,6 +55,11 @@ def check_gpu():
 def main():
     # GPU Status prüfen
     check_gpu()
+
+    # Start Timestamp
+    start_time = time.time()
+    print(f"⏱️  Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
     # Alle JPGs finden
     jpg_files = sorted(glob.glob(JPG_PATH))
     print(f"🔍 Analysiere {len(jpg_files)} Bilder...\n")
@@ -71,12 +78,20 @@ def main():
                 all_files.append(img_path)
 
             if i % 20 == 0:
-                print(f"  Verarbeitet: {i}/{len(jpg_files)} Bilder, {len(all_encodings)} Gesichter gefunden")
+                elapsed = time.time() - start_time
+                rate = i / elapsed if elapsed > 0 else 0
+                eta = (len(jpg_files) - i) / rate if rate > 0 else 0
+                print(f"  Verarbeitet: {i}/{len(jpg_files)} | "
+                      f"{len(all_encodings)} Gesichter | "
+                      f"{rate:.1f} Bilder/s | "
+                      f"ETA: {eta:.0f}s")
 
         except Exception as e:
             print(f"⚠️  Fehler bei {os.path.basename(img_path)}: {e}")
 
-    print(f"\n✅ {len(all_encodings)} Gesichter in {len(jpg_files)} Bildern gefunden\n")
+    detection_time = time.time() - start_time
+    print(f"\n✅ {len(all_encodings)} Gesichter in {len(jpg_files)} Bildern gefunden")
+    print(f"⏱️  Face Detection: {detection_time:.1f}s ({detection_time/len(jpg_files):.2f}s/Bild)\n")
 
     if len(all_encodings) == 0:
         print("❌ Keine Gesichter gefunden!")
@@ -84,16 +99,21 @@ def main():
 
     # DBSCAN Clustering
     print("🧮 Clustere Gesichter...")
+    cluster_start = time.time()
+
     encodings_array = np.array(all_encodings)
     clustering = DBSCAN(eps=0.5, min_samples=2, metric='euclidean').fit(encodings_array)
     labels = clustering.labels_
+
+    cluster_time = time.time() - cluster_start
 
     unique_labels = set(labels)
     n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
     n_noise = list(labels).count(-1)
 
     print(f"✅ {n_clusters} verschiedene Gesichter identifiziert")
-    print(f"   {n_noise} einzelne/unkategorisierte Detektionen\n")
+    print(f"   {n_noise} einzelne/unkategorisierte Detektionen")
+    print(f"⏱️  Clustering: {cluster_time:.2f}s\n")
 
     # Gruppiere nach Cluster-ID
     clusters = defaultdict(list)
@@ -128,6 +148,8 @@ def main():
         print()
 
     # Zusammenfassung
+    total_time = time.time() - start_time
+
     print("=" * 60)
     print("ZUSAMMENFASSUNG")
     print("=" * 60)
@@ -135,6 +157,14 @@ def main():
     print(f"Gesamt Gesichter:  {len(all_encodings)}")
     print(f"Unique Personen:   {n_clusters}")
     print(f"Noise Detektionen: {n_noise}")
+    print()
+    print("BENCHMARK")
+    print("-" * 60)
+    print(f"Face Detection:    {detection_time:.1f}s ({detection_time/len(jpg_files):.2f}s/Bild)")
+    print(f"Clustering:        {cluster_time:.2f}s")
+    print(f"Gesamt-Zeit:       {total_time:.1f}s ({total_time/60:.1f} Min)")
+    print(f"Durchschnitt:      {total_time/len(jpg_files):.2f}s/Bild")
+    print(f"Ende:              {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
 if __name__ == "__main__":
