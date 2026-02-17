@@ -191,12 +191,12 @@ def get_parking_stats(conn) -> Dict[str, Any]:
     cursor.execute("""
         SELECT
             parking_spot_id,
-            COUNT(*) as usage,
+            COUNT(*) as usage_count,
             GROUP_CONCAT(DISTINCT object_class) as vehicle_types
         FROM cam2_detected_objects
         WHERE parking_spot_id IS NOT NULL
         GROUP BY parking_spot_id
-        ORDER BY usage DESC
+        ORDER BY usage_count DESC
         LIMIT 5
     """)
     stats['top_spots'] = cursor.fetchall()
@@ -248,6 +248,25 @@ def get_scene_stats(conn) -> Dict[str, Any]:
 
     cursor.close()
     return stats
+
+def get_last_annotated_frame(conn) -> Dict[str, Any]:
+    """Holt Datum/Uhrzeit des letzten annotierten Frames"""
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+    cursor.execute("""
+        SELECT
+            recorded_at,
+            file_path,
+            annotated_image_path
+        FROM cam2_recordings
+        WHERE annotated_image_path IS NOT NULL
+        ORDER BY recorded_at DESC
+        LIMIT 1
+    """)
+
+    result = cursor.fetchone()
+    cursor.close()
+    return result
 
 def print_recordings_report(stats: Dict[str, Any]):
     """Druckt Recordings-Report"""
@@ -323,7 +342,7 @@ def print_parking_report(stats: Dict[str, Any]):
     if stats['top_spots']:
         print(f"\n🏆 Meistgenutzte Parkplätze:")
         for i, spot in enumerate(stats['top_spots'], 1):
-            print(f"  {i}. Parkplatz #{spot['parking_spot_id']:2} - {spot['usage']:6,} Belegungen ({spot['vehicle_types']})")
+            print(f"  {i}. Parkplatz #{spot['parking_spot_id']:2} - {spot['usage_count']:6,} Belegungen ({spot['vehicle_types']})")
 
     if stats['hourly']:
         print(f"\n🕐 Auslastung nach Uhrzeit (letzte 7 Tage):")
@@ -377,6 +396,11 @@ def main():
         # Szenen
         scene_stats = get_scene_stats(conn)
         print_scene_report(scene_stats)
+
+        # Letzter annotierter Frame
+        last_annotated = get_last_annotated_frame(conn)
+        if last_annotated:
+            print(f"\n📸 Letzter annotierter Frame: {last_annotated['recorded_at']} ({last_annotated['file_path']})")
 
         print("\n" + "=" * 80)
         print("✓ Report erfolgreich generiert")
