@@ -21,8 +21,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Configuration
 CAMERA_IP = "192.168.178.128"
 CAMERA_PORT = 8000  # HTTP API port (found via nmap)
-USERNAME = "admin"  # Change to your camera username
-PASSWORD = "your_password_here"  # Change to your camera password
+USERNAME = "web1"  # Camera username
+PASSWORD = "Auchgut11"  # Camera password
 
 OUTPUT_BASE = Path("/var/www/web1")
 CAMERA_NAME = "Cam2"
