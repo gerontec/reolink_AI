@@ -249,6 +249,25 @@ def get_scene_stats(conn) -> Dict[str, Any]:
     cursor.close()
     return stats
 
+def get_last_annotated_frame(conn) -> Dict[str, Any]:
+    """Holt Datum/Uhrzeit des letzten annotierten Frames"""
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+    cursor.execute("""
+        SELECT
+            recorded_at,
+            file_path,
+            annotated_image_path
+        FROM cam2_recordings
+        WHERE annotated_image_path IS NOT NULL
+        ORDER BY recorded_at DESC
+        LIMIT 1
+    """)
+
+    result = cursor.fetchone()
+    cursor.close()
+    return result
+
 def print_recordings_report(stats: Dict[str, Any]):
     """Druckt Recordings-Report"""
     print_section("📹 RECORDINGS")
@@ -377,6 +396,11 @@ def main():
         # Szenen
         scene_stats = get_scene_stats(conn)
         print_scene_report(scene_stats)
+
+        # Letzter annotierter Frame
+        last_annotated = get_last_annotated_frame(conn)
+        if last_annotated:
+            print(f"\n📸 Letzter annotierter Frame: {last_annotated['recorded_at']} ({last_annotated['file_path']})")
 
         print("\n" + "=" * 80)
         print("✓ Report erfolgreich generiert")
