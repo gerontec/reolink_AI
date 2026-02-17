@@ -263,6 +263,45 @@ def print_cluster_statistics(conn):
 
     cursor.close()
 
+def analyze_embedding_distances(face_ids: List[int], embeddings: np.ndarray, top_n: int = 20):
+    """Analysiert die Distanzen zwischen allen Face Embeddings"""
+    from sklearn.metrics.pairwise import euclidean_distances
+
+    # Normalisieren (wie im Clustering)
+    embeddings_normalized = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+
+    # Distanz-Matrix berechnen
+    distances = euclidean_distances(embeddings_normalized)
+
+    # Finde die ähnlichsten Paare (kleinste Distanzen, außer diagonal)
+    similar_pairs = []
+    n = len(face_ids)
+    for i in range(n):
+        for j in range(i+1, n):
+            similar_pairs.append((face_ids[i], face_ids[j], distances[i, j]))
+
+    # Sortiere nach Distanz (kleinste zuerst)
+    similar_pairs.sort(key=lambda x: x[2])
+
+    print("\n" + "=" * 80)
+    print("  EMBEDDING DISTANZ-ANALYSE")
+    print("=" * 80)
+    print(f"{'Face ID 1':<12} {'Face ID 2':<12} {'Distanz':<12} {'Status (eps=0.5)':<20}")
+    print("-" * 80)
+
+    for face_id1, face_id2, dist in similar_pairs[:top_n]:
+        status = "✅ Würde clustern" if dist <= 0.5 else "❌ Zu weit entfernt"
+        print(f"{face_id1:<12} {face_id2:<12} {dist:<12.4f} {status:<20}")
+
+    # Statistiken
+    close_pairs = sum(1 for _, _, d in similar_pairs if d <= 0.5)
+    print("-" * 80)
+    print(f"Paare innerhalb eps=0.5: {close_pairs}/{len(similar_pairs)}")
+    print(f"Min Distanz: {similar_pairs[0][2]:.4f}")
+    print(f"Max Distanz: {similar_pairs[-1][2]:.4f}")
+    print(f"Durchschnitt: {np.mean([d for _, _, d in similar_pairs]):.4f}")
+    print("=" * 80)
+
 def main():
     """Main Clustering Workflow"""
 
@@ -286,6 +325,9 @@ def main():
         if len(face_ids) == 0:
             logger.error("Keine Embeddings vorhanden - abgebrochen")
             return
+
+        # 1.5 Distanz-Analyse (Debug)
+        analyze_embedding_distances(face_ids, embeddings, top_n=20)
 
         # 2. Clustering durchführen
         cluster_labels = cluster_faces(embeddings, eps=EPS, min_samples=MIN_SAMPLES)
