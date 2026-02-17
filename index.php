@@ -21,7 +21,7 @@ $stats = [
 
 // Filter
 $show_all = isset($_GET['all']);
-$min_confidence = floatval($_GET['min_conf'] ?? 0.4); // Standard etwas höher für Gesichter
+$min_confidence = floatval($_GET['min_conf'] ?? 0.0); // 0.0 um auch Unknown-Gesichter (conf=0.0) anzuzeigen
 $min_size = intval($_GET['min_size'] ?? 40);       // Gesichter sind oft kleiner als ganze Körper
 $limit = intval($_GET['limit'] ?? 5);
 
@@ -42,7 +42,7 @@ $sql = "
         (f.bbox_y2 - f.bbox_y1) as height
     FROM cam2_detected_faces f
     JOIN cam2_recordings r ON f.recording_id = r.id
-    WHERE f.confidence >= ?
+    WHERE (f.person_name = 'Unknown' OR f.confidence >= ?)
       AND (f.bbox_x2 - f.bbox_x1) >= ?
 ";
 
