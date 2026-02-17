@@ -896,8 +896,7 @@ class FileProcessor:
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 ON DUPLICATE KEY UPDATE
                     file_size = VALUES(file_size),
-                    analyzed = VALUES(analyzed),
-                    updated_at = NOW()
+                    analyzed = VALUES(analyzed)
             """
 
             values = (
