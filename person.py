@@ -919,6 +919,8 @@ class FileProcessor:
                 # Alte AI-Analyse Ergebnisse löschen vor neuem Insert
                 cursor.execute("DELETE FROM cam2_detected_faces WHERE recording_id = %s", (recording_id,))
                 cursor.execute("DELETE FROM cam2_detected_persons WHERE recording_id = %s", (recording_id,))
+                cursor.execute("DELETE FROM cam2_detected_objects WHERE recording_id = %s", (recording_id,))
+                cursor.execute("DELETE FROM cam2_analysis_summary WHERE recording_id = %s", (recording_id,))
             
             # AI-Analyse Ergebnisse eintragen
             if analysis_results:
