@@ -26,10 +26,16 @@ Das Script:
 
 ```cron
 # Alle 2 Minuten (mit venv)
-*/2 * * * * cd /home/gh/python/reolink_AI && /home/gh/python/reolink_AI/venv_py311/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1
+# Pfad wird von setup-cron.sh automatisch erkannt:
+# - /home/gh/python/reolink_AI (wenn vorhanden)
+# - /home/user/reolink_AI (fallback)
+
+*/2 * * * * cd $PROJECT_DIR && $PROJECT_DIR/venv_py311/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1
 ```
 
-**Wichtig:** Nutze den **venv-Python** (nicht System-Python), damit alle Pakete (torch, insightface, etc.) verfügbar sind!
+**Wichtig:**
+- Nutze den **venv-Python** (nicht System-Python), damit alle Pakete (torch, insightface, etc.) verfügbar sind!
+- Das Setup-Script erkennt automatisch den richtigen Pfad und User (gh oder user)
 
 ## Warum nur Cron?
 
