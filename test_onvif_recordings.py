@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 CAMERA_IP = "192.168.178.128"
-ONVIF_PORT = 8000  # Standard ONVIF port (sometimes 80 or 8999)
+ONVIF_PORT = 8000  # Standard ONVIF port (NOT 554 which is RTSP)
 USERNAME = "web1"
 PASSWORD = "Auchgut11"
 
@@ -31,13 +31,37 @@ def test_onvif_connection():
     try:
         # Create ONVIF camera client
         logger.info(f"📡 Connecting to {CAMERA_IP}:{ONVIF_PORT}")
-        mycam = ONVIFCamera(
-            CAMERA_IP,
-            ONVIF_PORT,
-            USERNAME,
-            PASSWORD,
-            '/usr/share/onvif/wsdl/'  # WSDL path (may need adjustment)
-        )
+
+        # Use built-in WSDL files from python-onvif-zeep
+        import os
+        import site
+
+        # Try to find WSDL directory
+        wsdl_dir = None
+        for site_dir in site.getsitepackages():
+            potential_wsdl = os.path.join(site_dir, 'wsdl')
+            if os.path.exists(potential_wsdl):
+                wsdl_dir = potential_wsdl
+                break
+
+        if not wsdl_dir:
+            # Fallback: let onvif-zeep use its default
+            logger.info("Using default WSDL location")
+            mycam = ONVIFCamera(
+                CAMERA_IP,
+                ONVIF_PORT,
+                USERNAME,
+                PASSWORD
+            )
+        else:
+            logger.info(f"Using WSDL from: {wsdl_dir}")
+            mycam = ONVIFCamera(
+                CAMERA_IP,
+                ONVIF_PORT,
+                USERNAME,
+                PASSWORD,
+                wsdl_dir
+            )
 
         # Get device information
         logger.info("✅ ONVIF connection successful!")
