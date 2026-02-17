@@ -31,13 +31,13 @@ $size = min(max($size, 50), 800);
 try {
     // Gesicht-Daten abrufen
     $sql = "
-        SELECT 
+        SELECT
             f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2,
             r.file_path
-        FROM 
+        FROM
             cam2_detected_faces f
-        JOIN 
-            cam_recordings r ON f.recording_id = r.id
+        JOIN
+            cam2_recordings r ON f.recording_id = r.id
         WHERE 
             f.id = ?
     ";

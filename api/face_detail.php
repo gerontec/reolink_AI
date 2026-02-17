@@ -43,10 +43,10 @@ try {
             r.camera_name,
             r.recorded_at,
             r.file_type
-        FROM 
+        FROM
             cam2_detected_faces f
-        JOIN 
-            cam_recordings r ON f.recording_id = r.id
+        JOIN
+            cam2_recordings r ON f.recording_id = r.id
         WHERE 
             f.id = ?
     ";
