@@ -23,7 +23,8 @@ except ImportError:
 
 # Configuration
 CAMERA_IP = "192.168.178.128"
-CAMERA_PORT = 8000  # HTTP API port (found via nmap)
+CAMERA_PORT = 443  # HTTPS API port (trying standard HTTPS)
+USE_HTTPS = True  # Try HTTPS instead of HTTP
 USERNAME = "web1"  # Camera username
 PASSWORD = "Auchgut11"  # Camera password
 
@@ -173,7 +174,7 @@ async def main():
         USERNAME,
         PASSWORD,
         port=CAMERA_PORT,
-        use_https=False  # Use HTTP on port 8000
+        use_https=USE_HTTPS
     )
 
     try:
