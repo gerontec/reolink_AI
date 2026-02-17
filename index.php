@@ -21,7 +21,7 @@ $stats = [
 
 // Filter
 $show_all = isset($_GET['all']);
-$min_confidence = floatval($_GET['min_conf'] ?? 0.0); // 0.0 um auch Unknown-Gesichter (conf=0.0) anzuzeigen
+$min_confidence = floatval($_GET['min_conf'] ?? 0.4); // 0.4 für bekannte Gesichter, Unknown werden trotzdem angezeigt (siehe WHERE)
 $min_size = intval($_GET['min_size'] ?? 40);       // Gesichter sind oft kleiner als ganze Körper
 $limit = intval($_GET['limit'] ?? 5);
 
