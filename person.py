@@ -515,7 +515,8 @@ class AIAnalyzer:
                         'y1': int(y1),
                         'x2': int(x2),
                         'y2': int(y2)
-                    }
+                    },
+                    'embedding': face_embedding  # 512-dim numpy array for clustering
                 })
 
                 logger.debug(f"Gesicht erkannt: {name} (Konfidenz: {confidence:.2f})")
@@ -948,10 +949,15 @@ class FileProcessor:
             for face in results.get('faces', []):
                 query = """
                     INSERT INTO cam2_detected_faces
-                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, face_embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = face.get('bbox', {})
+
+                # Embedding serialisieren (numpy array -> bytes)
+                embedding = face.get('embedding')
+                embedding_bytes = embedding.tobytes() if embedding is not None else None
+
                 values = (
                     recording_id,
                     face.get('name', 'Unknown'),
@@ -959,7 +965,8 @@ class FileProcessor:
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
-                    bbox.get('y2', 0)
+                    bbox.get('y2', 0),
+                    embedding_bytes
                 )
                 cursor.execute(query, values)
             
@@ -1225,10 +1232,13 @@ def create_database_schema():
         bbox_y1 INT,
         bbox_x2 INT,
         bbox_y2 INT,
+        face_embedding BLOB,
+        face_cluster_id INT,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_person (person_name),
-        INDEX idx_recording (recording_id)
+        INDEX idx_recording (recording_id),
+        INDEX idx_cluster (face_cluster_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
     CREATE TABLE IF NOT EXISTS cam2_detected_objects (
