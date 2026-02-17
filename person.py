@@ -610,6 +610,8 @@ class AIAnalyzer:
             unique_vehicles = set()
             best_frame_score = 0
             best_frame_results = None  # Store complete detections from best frame
+            best_frame_image = None  # Store the actual frame image
+            best_frame_number = 0  # Store frame number
 
             while True:
                 ret, frame = cap.read()
@@ -639,6 +641,9 @@ class AIAnalyzer:
                         'vehicles': frame_results['vehicles'].copy(),
                         'persons': frame_results['persons']
                     }
+                    # Store the actual frame image (deep copy to avoid memory issues)
+                    best_frame_image = frame.copy()
+                    best_frame_number = frame_count
                     logger.debug(f"New best frame: #{frame_count}, Score: {frame_score}")
 
                 # Gesichter sammeln
@@ -670,17 +675,22 @@ class AIAnalyzer:
             if best_frame_results:
                 results['objects'] = best_frame_results['objects']
                 results['vehicles'] = best_frame_results['vehicles']
-                logger.debug(f"Using {len(best_frame_results['objects'])} objects from best frame")
+                results['best_frame'] = best_frame_image  # Include the actual frame image
+                results['best_frame_number'] = best_frame_number  # Include frame number
+                logger.debug(f"Using {len(best_frame_results['objects'])} objects from best frame #{best_frame_number}")
             else:
                 # Fallback: No best frame found (empty video)
                 # Return empty lists to avoid storing objects without confidence
                 results['objects'] = []
                 results['vehicles'] = []
+                results['best_frame'] = None
+                results['best_frame_number'] = 0
                 if unique_objects or unique_vehicles:
                     logger.warning(f"Video {video_path}: Objects detected ({unique_objects}) but no best frame found - data incomplete")
-            
+
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
-                       f"{len(unique_faces)} Gesichter, {results['max_persons']} max. Personen")
+                       f"{len(unique_faces)} Gesichter, {results['max_persons']} max. Personen, "
+                       f"Bester Frame: #{best_frame_number}")
 
             # Debug: Log object confidence scores
             for i, obj in enumerate(results.get('objects', [])):
