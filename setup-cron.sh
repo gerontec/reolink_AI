@@ -39,8 +39,21 @@ echo -e "  ${GREEN}✓ Alle Services gestoppt${NC}"
 echo ""
 echo "2. Crontab für User 'gh' einrichten..."
 
-# Crontab-Eintrag
-CRON_ENTRY="*/2 * * * * cd /home/user/reolink_AI && /usr/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1"
+# Erkenne venv
+VENV_PYTHON=""
+if [ -f "/home/gh/python/reolink_AI/venv_py311/bin/python3" ]; then
+    VENV_PYTHON="/home/gh/python/reolink_AI/venv_py311/bin/python3"
+    echo -e "  ${GREEN}✓ venv gefunden: venv_py311${NC}"
+elif [ -f "/home/user/reolink_AI/venv/bin/python3" ]; then
+    VENV_PYTHON="/home/user/reolink_AI/venv/bin/python3"
+    echo -e "  ${GREEN}✓ venv gefunden: venv${NC}"
+else
+    VENV_PYTHON="/usr/bin/python3"
+    echo -e "  ${YELLOW}⚠ Kein venv gefunden, nutze System-Python${NC}"
+fi
+
+# Crontab-Eintrag mit venv-Python
+CRON_ENTRY="*/2 * * * * cd /home/gh/python/reolink_AI && ${VENV_PYTHON} person.py --limit 50 >> /var/log/reolink-ai.log 2>&1"
 
 # Prüfen ob Eintrag bereits existiert
 if crontab -u gh -l 2>/dev/null | grep -q "person.py"; then

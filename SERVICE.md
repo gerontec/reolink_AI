@@ -25,9 +25,11 @@ Das Script:
 ## Crontab-Eintrag
 
 ```cron
-# Alle 2 Minuten
-*/2 * * * * cd /home/user/reolink_AI && /usr/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1
+# Alle 2 Minuten (mit venv)
+*/2 * * * * cd /home/gh/python/reolink_AI && /home/gh/python/reolink_AI/venv_py311/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1
 ```
+
+**Wichtig:** Nutze den **venv-Python** (nicht System-Python), damit alle Pakete (torch, insightface, etc.) verfügbar sind!
 
 ## Warum nur Cron?
 
@@ -86,8 +88,14 @@ crontab -u gh -e
 ### Cron-Job manuell testen
 ```bash
 su - gh
-cd /home/user/reolink_AI
+cd /home/gh/python/reolink_AI
+
+# Mit venv
+source venv_py311/bin/activate
 python3 person.py --limit 50
+
+# Oder direkt (wie Cron es macht)
+/home/gh/python/reolink_AI/venv_py311/bin/python3 person.py --limit 50
 ```
 
 ## Performance
@@ -166,10 +174,29 @@ sudo touch /var/log/reolink-ai.log
 sudo chown gh:gh /var/log/reolink-ai.log
 ```
 
+### venv nicht gefunden
+```bash
+# Prüfe ob venv existiert
+ls -la /home/gh/python/reolink_AI/venv_py311/
+
+# Falls nicht: venv erstellen
+cd /home/gh/python/reolink_AI
+python3.11 -m venv venv_py311
+source venv_py311/bin/activate
+pip install -r requirements.txt
+
+# Crontab manuell anpassen
+crontab -u gh -e
+# Nutze venv-Python:
+*/2 * * * * cd /home/gh/python/reolink_AI && /home/gh/python/reolink_AI/venv_py311/bin/python3 person.py --limit 50
+```
+
 ### GPU nicht gefunden
 ```bash
-# Als User 'gh' testen
+# Als User 'gh' testen (mit venv!)
 su - gh
+cd /home/gh/python/reolink_AI
+source venv_py311/bin/activate
 python3 -c "import torch; print(torch.cuda.is_available())"
 
 # CUDA-Pfad in Crontab setzen (falls nötig)
