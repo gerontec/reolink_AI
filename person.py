@@ -98,6 +98,160 @@ def check_gpu_availability():
     return cuda_available
 
 
+class ImageAnnotator:
+    """
+    Zeichnet Bounding Boxes und Labels auf Bilder
+    ANGEPASST: Gelbe Boxen für BEKANNTE Gesichter
+    """
+
+    # Farben (BGR Format für OpenCV)
+    COLOR_VEHICLE = (0, 255, 255)   # Gelb
+    COLOR_PERSON = (0, 255, 0)      # Grün
+    COLOR_KNOWN_FACE = (0, 255, 255)  # Gelb für bekannte Gesichter
+    COLOR_UNKNOWN_FACE = (0, 0, 255) # Rot für unbekannte Gesichter
+    COLOR_OBJECT = (255, 0, 255)    # Magenta
+
+    def __init__(self, output_dir: Path):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"ImageAnnotator initialisiert - Output: {self.output_dir}")
+
+    def annotate_image(self, image_path: Path, analysis_results: Dict[str, Any],
+                      save_prefix: str = "annotated") -> Optional[Path]:
+        """
+        Zeichnet alle Detektionen auf das Bild
+        GELBE BOXEN nur für BEKANNTE Gesichter
+        """
+        try:
+            # Bild laden
+            image = cv2.imread(str(image_path))
+            if image is None:
+                logger.error(f"Bild konnte nicht geladen werden: {image_path}")
+                return None
+
+            # Detektionen zeichnen
+            detection_count = 0
+            known_faces_count = 0
+
+            # 1. Fahrzeuge (Gelbe Boxen)
+            for vehicle in analysis_results.get('vehicles', []):
+                self._draw_bbox(image, vehicle, self.COLOR_VEHICLE, vehicle['class'])
+                detection_count += 1
+
+            # 2. Personen (Grüne Boxen)
+            for obj in analysis_results.get('objects', []):
+                if obj['class'] == 'person':
+                    self._draw_bbox(image, obj, self.COLOR_PERSON, 'Person')
+                    detection_count += 1
+
+            # 3. Gesichter - GELB für bekannt, ROT für unbekannt
+            for face in analysis_results.get('faces', []):
+                if face['name'] != 'Unknown':
+                    # BEKANNTE Gesichter = GELBE BOX
+                    self._draw_face_bbox(image, face, self.COLOR_KNOWN_FACE)
+                    detection_count += 1
+                    known_faces_count += 1
+                else:
+                    # Unbekannte Gesichter = Rote Box
+                    self._draw_face_bbox(image, face, self.COLOR_UNKNOWN_FACE)
+                    detection_count += 1
+
+            # 4. Andere interessante Objekte (Magenta)
+            interesting_objects = ['dog', 'cat', 'bird', 'horse', 'sheep', 'cow',
+                                 'elephant', 'bear', 'zebra', 'giraffe']
+            for obj in analysis_results.get('objects', []):
+                if obj['class'] in interesting_objects:
+                    self._draw_bbox(image, obj, self.COLOR_OBJECT, obj['class'])
+                    detection_count += 1
+
+            # Nur speichern wenn Detektionen vorhanden
+            if detection_count == 0:
+                logger.debug(f"Keine Detektionen in {image_path.name} - überspringe Annotation")
+                return None
+
+            # Info-Text oben links
+            info_text = f"Detektionen: {detection_count} | Bekannte Gesichter: {known_faces_count} | GPU: {analysis_results.get('gpu_used', False)}"
+            cv2.putText(image, info_text, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(image, info_text, (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 1)
+
+            # Legende
+            legend_y = 60
+            cv2.putText(image, "Gelb = Bekannte Person/Fahrzeug", (10, legend_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+            cv2.putText(image, "Gruen = Person", (10, legend_y + 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+            # Ausgabepfad erstellen
+            output_filename = f"{save_prefix}_{image_path.name}"
+            output_path = self.output_dir / output_filename
+
+            # Speichern
+            cv2.imwrite(str(output_path), image)
+            logger.debug(f"✓ Annotiert ({detection_count} Det., {known_faces_count} bekannte): {output_filename}")
+
+            return output_path
+
+        except Exception as e:
+            logger.error(f"Fehler beim Annotieren von {image_path}: {e}")
+            return None
+
+    def _draw_bbox(self, image: np.ndarray, detection: Dict[str, Any],
+                   color: Tuple[int, int, int], label_text: str):
+        """Zeichnet Bounding Box mit Label"""
+        bbox = detection['bbox']
+        x1 = int(bbox['x1'])
+        y1 = int(bbox['y1'])
+        x2 = int(bbox['x2'])
+        y2 = int(bbox['y2'])
+        conf = detection.get('confidence', 0.0)
+
+        # Box zeichnen (dickere Linie)
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 3)
+
+        # Label mit Hintergrund
+        label = f"{label_text} {conf:.2f}"
+        label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+
+        # Hintergrund für bessere Lesbarkeit
+        cv2.rectangle(image,
+                     (x1, y1 - label_size[1] - 10),
+                     (x1 + label_size[0], y1),
+                     color, -1)
+
+        # Text
+        cv2.putText(image, label, (x1, y1 - 5),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+    def _draw_face_bbox(self, image: np.ndarray, face: Dict[str, Any],
+                       color: Tuple[int, int, int]):
+        """Zeichnet Gesichts-Bounding Box mit Namen"""
+        bbox = face['bbox']
+        x1 = bbox['x1']
+        y1 = bbox['y1']
+        x2 = bbox['x2']
+        y2 = bbox['y2']
+        conf = face.get('confidence', 0.0)
+        name = face.get('name', 'Unknown')
+
+        # Box zeichnen (dicker für bekannte Gesichter)
+        thickness = 4 if name != 'Unknown' else 2
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+
+        # Label mit Hintergrund
+        label = f"{name} {conf:.2f}"
+        label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+
+        cv2.rectangle(image,
+                     (x1, y1 - label_size[1] - 10),
+                     (x1 + label_size[0], y1),
+                     color, -1)
+
+        cv2.putText(image, label, (x1, y1 - 5),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+
 class AIAnalyzer:
     """AI-Analyse Engine für Video und Bilder - GPU-Optimiert"""
     
@@ -524,18 +678,23 @@ class AIAnalyzer:
 
 class FileProcessor:
     """Verarbeitet Mediendateien mit AI-Analyse und Datenbank-Integration"""
-    
+
     def __init__(self, base_path: str, db_config: dict, ai_analyzer: AIAnalyzer):
         self.base_path = Path(base_path)
         self.db_config = db_config
         self.db_connection = None
         self.ai_analyzer = ai_analyzer
-        
+
+        # Image Annotator für annotierte Bilder
+        annotated_dir = self.base_path / "annotated"
+        self.annotator = ImageAnnotator(annotated_dir)
+
         # Statistiken
         self.processed_count = 0
         self.skipped_count = 0
         self.error_count = 0
         self.analyzed_count = 0
+        self.annotated_count = 0
         self.total_analysis_time = 0.0
         
     def connect_db(self) -> bool:
@@ -555,7 +714,29 @@ class FileProcessor:
         if self.db_connection and self.db_connection.is_connected():
             self.db_connection.close()
             logger.info("Datenbankverbindung geschlossen")
-    
+
+    def update_annotated_image_path(self, recording_id: int, annotated_path: Path):
+        """Aktualisiert den Pfad zum annotierten Bild in der Datenbank"""
+        try:
+            cursor = self.db_connection.cursor()
+
+            # Relativen Pfad berechnen (relativ zu MEDIA_BASE_PATH)
+            rel_path = str(annotated_path.relative_to(self.base_path))
+
+            query = """
+                UPDATE cam2_recordings
+                SET annotated_image_path = %s
+                WHERE id = %s
+            """
+            cursor.execute(query, (rel_path, recording_id))
+            self.db_connection.commit()
+            cursor.close()
+
+            logger.debug(f"✓ Annotierter Bildpfad gespeichert: {rel_path}")
+
+        except Exception as e:
+            logger.error(f"Fehler beim Update des annotierten Bildpfads: {e}")
+
     def parse_filename(self, filename: str) -> Optional[Tuple[str, str, datetime]]:
         """Parst Dateinamen nach dem Muster: Camera1_00_20260121074033.jpg/mp4"""
         pattern = r'^(Camera\d+)_(\d{2})_(\d{14})\.(jpg|mp4)$'
@@ -761,7 +942,47 @@ class FileProcessor:
         recording_id = self.insert_file_to_db(
             filepath, camera_name, file_type, timestamp, analysis_results
         )
-        
+
+        # Annotiertes Bild erstellen (wenn AI-Analyse durchgeführt wurde)
+        if recording_id and analysis_results and self.annotator:
+            try:
+                if file_type == 'jpg':
+                    # Bild direkt annotieren
+                    annotated_path = self.annotator.annotate_image(
+                        filepath, analysis_results
+                    )
+                    if annotated_path:
+                        self.annotated_count += 1
+                        self.update_annotated_image_path(recording_id, annotated_path)
+                        logger.info(f"  ✓ Annotiertes Bild erstellt")
+
+                elif file_type == 'mp4' and analysis_results.get('best_frame') is not None:
+                    # Best Frame aus Video annotieren
+                    best_frame = analysis_results['best_frame']
+                    best_frame_num = analysis_results.get('best_frame_number', 0)
+
+                    # Temporäre Datei für den Frame erstellen
+                    temp_frame_path = Path(f"/tmp/frame_{recording_id}.jpg")
+                    cv2.imwrite(str(temp_frame_path), best_frame)
+
+                    # Frame annotieren mit speziellem Prefix
+                    annotated_path = self.annotator.annotate_image(
+                        temp_frame_path, analysis_results,
+                        save_prefix=f"video_{filename.replace('.mp4', '')}"
+                    )
+
+                    if annotated_path:
+                        self.annotated_count += 1
+                        self.update_annotated_image_path(recording_id, annotated_path)
+                        logger.info(f"  ✓ Annotiertes Bild aus Frame #{best_frame_num} erstellt")
+
+                    # Temporäre Datei löschen
+                    if temp_frame_path.exists():
+                        temp_frame_path.unlink()
+
+            except Exception as e:
+                logger.error(f"Fehler beim Erstellen des annotierten Bildes: {e}")
+
         if recording_id:
             self.processed_count += 1
             return True
@@ -818,6 +1039,7 @@ class FileProcessor:
         logger.info("Verarbeitung abgeschlossen")
         logger.info(f"Verarbeitet: {self.processed_count} Dateien")
         logger.info(f"AI-Analysiert: {self.analyzed_count} Dateien")
+        logger.info(f"Annotierte Bilder: {self.annotated_count} Dateien")
         logger.info(f"Übersprungen: {self.skipped_count} Dateien")
         logger.info(f"Fehler: {self.error_count} Dateien")
         logger.info(f"Gesamt-Dauer: {elapsed:.2f} Sekunden ({elapsed/60:.2f} Minuten)")
