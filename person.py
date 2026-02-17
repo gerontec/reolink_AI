@@ -28,7 +28,8 @@ import face_recognition
 import torch
 
 # Configuration
-MEDIA_BASE_PATH = "/var/www/html/web1"
+MEDIA_BASE_PATH = "/var/www/web1"  # FTP Upload-Verzeichnis der Reolink Kamera
+ANNOTATED_OUTPUT_PATH = "/var/www/html/web1/annotated"  # Output für annotierte Bilder (Web-Server)
 DB_CONFIG = {
     'host': 'localhost',
     'database': 'wagodb',
@@ -679,14 +680,17 @@ class AIAnalyzer:
 class FileProcessor:
     """Verarbeitet Mediendateien mit AI-Analyse und Datenbank-Integration"""
 
-    def __init__(self, base_path: str, db_config: dict, ai_analyzer: AIAnalyzer):
+    def __init__(self, base_path: str, db_config: dict, ai_analyzer: AIAnalyzer, annotated_output_path: str = None):
         self.base_path = Path(base_path)
         self.db_config = db_config
         self.db_connection = None
         self.ai_analyzer = ai_analyzer
 
         # Image Annotator für annotierte Bilder
-        annotated_dir = self.base_path / "annotated"
+        if annotated_output_path:
+            annotated_dir = Path(annotated_output_path)
+        else:
+            annotated_dir = self.base_path / "annotated"
         self.annotator = ImageAnnotator(annotated_dir)
 
         # Statistiken
@@ -1216,7 +1220,7 @@ def main():
     )
     
     # Verarbeitung starten
-    processor = FileProcessor(args.base_path, DB_CONFIG, ai_analyzer)
+    processor = FileProcessor(args.base_path, DB_CONFIG, ai_analyzer, ANNOTATED_OUTPUT_PATH)
     processor.process_all_files(
         limit=args.limit,
         analyze=not args.no_analysis
