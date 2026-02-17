@@ -888,14 +888,18 @@ class FileProcessor:
             # Dateigröße ermitteln
             file_size = filepath.stat().st_size
             
-            # Haupt-Recording eintragen
+            # Haupt-Recording eintragen (oder updaten wenn bereits vorhanden)
             query = """
                 INSERT INTO cam2_recordings
                 (camera_name, file_path, file_type, file_size, recorded_at,
                  analyzed, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON DUPLICATE KEY UPDATE
+                    file_size = VALUES(file_size),
+                    analyzed = VALUES(analyzed),
+                    updated_at = NOW()
             """
-            
+
             values = (
                 camera_name,
                 rel_path,
@@ -904,9 +908,18 @@ class FileProcessor:
                 timestamp,
                 analysis_results is not None
             )
-            
+
             cursor.execute(query, values)
             recording_id = cursor.lastrowid
+
+            # Wenn UPDATE (nicht INSERT), recording_id holen
+            if recording_id == 0:
+                cursor.execute("SELECT id FROM cam2_recordings WHERE file_path = %s", (rel_path,))
+                recording_id = cursor.fetchone()[0]
+
+                # Alte AI-Analyse Ergebnisse löschen vor neuem Insert
+                cursor.execute("DELETE FROM cam2_detected_faces WHERE recording_id = %s", (recording_id,))
+                cursor.execute("DELETE FROM cam2_detected_persons WHERE recording_id = %s", (recording_id,))
             
             # AI-Analyse Ergebnisse eintragen
             if analysis_results:
