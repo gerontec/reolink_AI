@@ -191,12 +191,12 @@ def get_parking_stats(conn) -> Dict[str, Any]:
     cursor.execute("""
         SELECT
             parking_spot_id,
-            COUNT(*) as usage,
+            COUNT(*) as usage_count,
             GROUP_CONCAT(DISTINCT object_class) as vehicle_types
         FROM cam2_detected_objects
         WHERE parking_spot_id IS NOT NULL
         GROUP BY parking_spot_id
-        ORDER BY usage DESC
+        ORDER BY usage_count DESC
         LIMIT 5
     """)
     stats['top_spots'] = cursor.fetchall()
@@ -342,7 +342,7 @@ def print_parking_report(stats: Dict[str, Any]):
     if stats['top_spots']:
         print(f"\n🏆 Meistgenutzte Parkplätze:")
         for i, spot in enumerate(stats['top_spots'], 1):
-            print(f"  {i}. Parkplatz #{spot['parking_spot_id']:2} - {spot['usage']:6,} Belegungen ({spot['vehicle_types']})")
+            print(f"  {i}. Parkplatz #{spot['parking_spot_id']:2} - {spot['usage_count']:6,} Belegungen ({spot['vehicle_types']})")
 
     if stats['hourly']:
         print(f"\n🕐 Auslastung nach Uhrzeit (letzte 7 Tage):")
