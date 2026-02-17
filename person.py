@@ -640,11 +640,12 @@ class AIAnalyzer:
                 # Calculate frame score (faces + persons have higher priority)
                 frame_score = len(frame_results['faces']) * 10 + frame_results['persons'] * 5 + len(frame_results['objects'])
 
-                # Track best frame (for complete object data with confidence)
+                # Track best frame (for complete object data with confidence AND face embeddings)
                 if frame_score > best_frame_score:
                     best_frame_score = frame_score
-                    # Store COMPLETE detections (with confidence and bbox) from best frame
+                    # Store COMPLETE detections (with confidence, bbox, and embeddings!) from best frame
                     best_frame_results = {
+                        'faces': frame_results['faces'].copy(),  # Include faces with embeddings!
                         'objects': frame_results['objects'].copy(),
                         'vehicles': frame_results['vehicles'].copy(),
                         'persons': frame_results['persons']
@@ -677,24 +678,25 @@ class AIAnalyzer:
             cap.release()
 
             results['analyzed_frames'] = analyzed_count
-            results['faces'] = [{'name': name} for name in unique_faces]
 
-            # Use detections from BEST frame (with confidence and bbox data!)
+            # Use detections from BEST frame (with confidence, bbox, and embeddings!)
             if best_frame_results:
+                results['faces'] = best_frame_results['faces']  # Complete face data with embeddings!
                 results['objects'] = best_frame_results['objects']
                 results['vehicles'] = best_frame_results['vehicles']
                 results['best_frame'] = best_frame_image  # Include the actual frame image
                 results['best_frame_number'] = best_frame_number  # Include frame number
-                logger.debug(f"Using {len(best_frame_results['objects'])} objects from best frame #{best_frame_number}")
+                logger.debug(f"Using best frame #{best_frame_number}: {len(best_frame_results['faces'])} faces, {len(best_frame_results['objects'])} objects")
             else:
                 # Fallback: No best frame found (empty video)
-                # Return empty lists to avoid storing objects without confidence
+                # Return empty lists to avoid storing data without confidence/embeddings
+                results['faces'] = []
                 results['objects'] = []
                 results['vehicles'] = []
                 results['best_frame'] = None
                 results['best_frame_number'] = 0
-                if unique_objects or unique_vehicles:
-                    logger.warning(f"Video {video_path}: Objects detected ({unique_objects}) but no best frame found - data incomplete")
+                if unique_faces or unique_objects or unique_vehicles:
+                    logger.warning(f"Video {video_path}: Detections found but no best frame - data incomplete")
 
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
                        f"{len(unique_faces)} Gesichter, {results['max_persons']} max. Personen, "
