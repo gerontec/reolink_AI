@@ -104,7 +104,7 @@ def get_faces_stats(conn) -> Dict[str, Any]:
             COUNT(*) as total_faces,
             COUNT(DISTINCT person_name) as unique_persons,
             SUM(CASE WHEN person_name = 'Unknown' THEN 1 ELSE 0 END) as unknown_faces,
-            AVG(confidence) as avg_confidence
+            AVG(CASE WHEN person_name != 'Unknown' AND confidence > 0 THEN confidence END) as avg_confidence
         FROM cam2_detected_faces
     """)
     stats['general'] = cursor.fetchone()
@@ -114,7 +114,8 @@ def get_faces_stats(conn) -> Dict[str, Any]:
         SELECT
             person_name,
             COUNT(*) as detections,
-            AVG(confidence) as avg_confidence
+            AVG(NULLIF(confidence, 0)) as avg_confidence,
+            SUM(CASE WHEN confidence = 0 THEN 1 ELSE 0 END) as manual_count
         FROM cam2_detected_faces
         WHERE person_name != 'Unknown'
         GROUP BY person_name
@@ -326,13 +327,23 @@ def print_faces_report(stats: Dict[str, Any]):
     print(f"Gesamt Gesichter:      {gen['total_faces']:,}")
     print(f"  - Bekannt:           {gen['unique_persons'] - 1:,} Personen")  # -1 für Unknown
     print(f"  - Unbekannt:         {gen['unknown_faces']:,}")
-    print(f"Durchschn. Konfidenz:  {gen['avg_confidence']:.2%}")
+    avg_conf = gen['avg_confidence']
+    conf_str = f"{avg_conf:.2%}" if avg_conf else "n/a (nur manuelle Erkennungen)"
+    print(f"Durchschn. Konfidenz:  {conf_str}")
     print(f"Neue Gesichter (24h):  {stats['new_24h']:,}")
 
     if stats['top_persons']:
         print(f"\n🏆 Top Erkannte Personen:")
         for i, person in enumerate(stats['top_persons'], 1):
-            print(f"  {i:2}. {person['person_name']:20} - {person['detections']:4} Erkennungen ({person['avg_confidence']:.2%})")
+            conf = person['avg_confidence']
+            manual = person.get('manual_count', 0) or 0
+            if conf and conf > 0:
+                conf_str = f"{conf:.2%}"
+            elif manual == person['detections']:
+                conf_str = "manuell benannt"
+            else:
+                conf_str = f"manuell ({manual}/{person['detections']})"
+            print(f"  {i:2}. {person['person_name']:20} - {person['detections']:4} Erkennungen ({conf_str})")
 
 def print_face_clusters_stats(stats: Dict[str, Any]):
     """Druckt Face Clustering Statistiken"""

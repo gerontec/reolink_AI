@@ -486,9 +486,12 @@ class AIAnalyzer:
                 bbox = face.bbox.astype(int)
                 x1, y1, x2, y2 = bbox
 
+                # InsightFace Detection-Konfidenz (ist das ein Gesicht?)
+                det_score = float(getattr(face, 'det_score', 0.0))
+
                 # Gesicht mit bekannten vergleichen (Cosine Similarity)
                 name = "Unknown"
-                confidence = 0.0
+                confidence = det_score  # Fallback: Erkennungs-Score für Unknown-Gesichter
 
                 if len(self.known_face_encodings) > 0:
                     # Cosine Similarity berechnen (InsightFace embeddings sind normalized)
@@ -505,7 +508,7 @@ class AIAnalyzer:
                     # Threshold für Match (cosine similarity: 0.4-0.6 ist gut)
                     if best_similarity > 0.5:
                         name = self.known_face_names[best_match_index]
-                        confidence = float(best_similarity)
+                        confidence = float(best_similarity)  # Recognition-Score überschreibt det_score
 
                 faces.append({
                     'name': name,
@@ -519,7 +522,7 @@ class AIAnalyzer:
                     'embedding': face_embedding  # 512-dim numpy array for clustering
                 })
 
-                logger.debug(f"Gesicht erkannt: {name} (Konfidenz: {confidence:.2f})")
+                logger.debug(f"Gesicht erkannt: {name} (det={det_score:.2f}, conf={confidence:.2f})")
 
         except Exception as e:
             logger.error(f"Fehler bei Gesichtserkennung: {e}")
