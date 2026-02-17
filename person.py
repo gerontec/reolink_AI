@@ -1008,16 +1008,22 @@ class FileProcessor:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
     
-    def find_all_media_files(self) -> List[Path]:
+    def find_all_media_files(self, jpg_only: bool = False) -> List[Path]:
         """Findet alle Mediendateien rekursiv"""
         media_files = []
-        
-        for ext in ['*.mp4', '*.jpg']:
-            media_files.extend(self.base_path.rglob(ext))
-        
+
+        if jpg_only:
+            # Nur JPG-Dateien (schneller: ~0.1s pro Datei)
+            media_files.extend(self.base_path.rglob('*.jpg'))
+            logger.info("JPG-only Modus aktiviert")
+        else:
+            # Alle Mediendateien (JPG + MP4)
+            for ext in ['*.mp4', '*.jpg']:
+                media_files.extend(self.base_path.rglob(ext))
+
         # Nach Datum sortieren (älteste zuerst)
         media_files.sort(key=lambda p: p.stat().st_mtime)
-        
+
         logger.info(f"Gefunden: {len(media_files)} Mediendateien")
         return media_files
     
@@ -1123,27 +1129,27 @@ class FileProcessor:
             self.error_count += 1
             return False
     
-    def process_all_files(self, limit: Optional[int] = None, analyze: bool = True):
+    def process_all_files(self, limit: Optional[int] = None, analyze: bool = True, jpg_only: bool = False):
         """Verarbeitet alle gefundenen Dateien"""
         if not self.connect_db():
             logger.error("Abbruch: Keine Datenbankverbindung")
             return
-        
+
         logger.info("=" * 70)
         logger.info(f"Starte Dateiverarbeitung mit AI-Analyse")
         logger.info(f"Version: {VERSION} | Build: {BUILD_TIMESTAMP}")
         logger.info(f"AI-Device: {self.ai_analyzer.device}")
         logger.info(f"Bekannte Gesichter: {len(self.ai_analyzer.known_face_names)}")
-        
+
         # GPU Stats anzeigen
         gpu_stats = self.ai_analyzer.get_gpu_stats()
         if gpu_stats['available']:
             logger.info(f"GPU: {gpu_stats['name']}")
             logger.info(f"GPU Memory: {gpu_stats['memory_allocated_mb']:.2f} MB / {gpu_stats['memory_total_gb']:.2f} GB")
-        
+
         logger.info("=" * 70)
-        
-        media_files = self.find_all_media_files()
+
+        media_files = self.find_all_media_files(jpg_only=jpg_only)
         
         if limit:
             media_files = media_files[:limit]
@@ -1322,7 +1328,12 @@ def main():
         default=KNOWN_FACES_DIR,
         help=f'Verzeichnis mit bekannten Gesichtern (default: {KNOWN_FACES_DIR})'
     )
-    
+    parser.add_argument(
+        '--jpg-only',
+        action='store_true',
+        help='Nur JPG-Dateien verarbeiten (schneller, ~0.1s pro Datei)'
+    )
+
     args = parser.parse_args()
     
     if args.debug:
@@ -1353,7 +1364,8 @@ def main():
     processor = FileProcessor(args.base_path, DB_CONFIG, ai_analyzer, ANNOTATED_OUTPUT_PATH)
     processor.process_all_files(
         limit=args.limit,
-        analyze=not args.no_analysis
+        analyze=not args.no_analysis,
+        jpg_only=args.jpg_only
     )
 
 
