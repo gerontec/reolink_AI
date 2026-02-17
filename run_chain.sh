@@ -8,10 +8,15 @@
 # Script Directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Log-Datei für die gesamte Chain
+# Log-Datei für die gesamte Chain (wird überschrieben)
 LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
-CHAIN_LOG="${LOG_DIR}/chain_$(date +%Y%m%d_%H%M%S).log"
+CHAIN_LOG="${LOG_DIR}/chain.log"
+
+# Alte Log als Backup behalten
+if [ -f "${CHAIN_LOG}" ]; then
+    mv "${CHAIN_LOG}" "${CHAIN_LOG}.old"
+fi
 
 echo "##############################################################################" | tee "${CHAIN_LOG}"
 echo "#  AI Processing Chain gestartet: $(date)" | tee -a "${CHAIN_LOG}"

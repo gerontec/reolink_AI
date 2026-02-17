@@ -88,27 +88,30 @@ crontab -l
 Alle Logs werden automatisch erstellt in:
 ```
 reolink_AI/logs/
-├── person_20260217_020000.log      # Person Detection
-├── cluster_20260217_021500.log     # Face Clustering
-└── chain_20260217_020000.log       # Komplette Chain
+├── person.log          # Person Detection (aktuell)
+├── person.log.old      # Person Detection (vorheriger Lauf)
+├── cluster.log         # Face Clustering (aktuell)
+├── cluster.log.old     # Face Clustering (vorheriger Lauf)
+├── chain.log           # Komplette Chain (aktuell)
+└── chain.log.old       # Komplette Chain (vorheriger Lauf)
 ```
+
+**Logs werden ÜBERSCHRIEBEN** - kein Müllhaufen mit tausend Log-Dateien!
+Das vorherige Log wird als `.old` Backup behalten.
 
 **Logs anschauen:**
 ```bash
-# Letztes Chain-Log
-ls -lt logs/chain_*.log | head -1 | xargs cat
+# Aktuelles Chain-Log
+cat logs/chain.log
 
-# Tail letztes Person-Log (live)
-ls -t logs/person_*.log | head -1 | xargs tail -f
+# Vorheriges Chain-Log
+cat logs/chain.log.old
+
+# Live-Ansicht (tail -f)
+tail -f logs/chain.log
 
 # Nur Fehler anzeigen
-grep -i error logs/chain_*.log
-```
-
-**Log-Rotation (empfohlen):**
-```cron
-# Alte Logs löschen (älter als 30 Tage), täglich um 4:00 Uhr
-0 4 * * * find /home/gh/python/reolink_AI/logs -name "*.log" -mtime +30 -delete
+grep -i error logs/chain.log
 ```
 
 ---
@@ -206,9 +209,6 @@ pip install -r requirements.txt
 
 # Stündlich: Neue Dateien (max 200)
 0 * * * * /home/gh/python/reolink_AI/run_chain.sh --limit 200
-
-# Täglich um 4:00 Uhr: Log-Cleanup
-0 4 * * * find /home/gh/python/reolink_AI/logs -name "*.log" -mtime +30 -delete
 ```
 
 **Status prüfen:**
