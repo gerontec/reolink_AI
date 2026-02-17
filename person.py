@@ -863,10 +863,10 @@ class FileProcessor:
         return None
     
     def file_exists_in_db(self, filepath: str) -> bool:
-        """Prüft ob Datei bereits in DB existiert"""
+        """Prüft ob Datei bereits in DB existiert UND analysiert wurde"""
         try:
             cursor = self.db_connection.cursor()
-            query = "SELECT COUNT(*) FROM cam2_recordings WHERE file_path = %s"
+            query = "SELECT COUNT(*) FROM cam2_recordings WHERE file_path = %s AND analyzed = 1"
             cursor.execute(query, (filepath,))
             count = cursor.fetchone()[0]
             cursor.close()
