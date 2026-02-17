@@ -17,12 +17,18 @@ def main():
     conn = pymysql.connect(**DB_CONFIG)
     cursor = conn.cursor()
 
-    # Alle Embeddings laden
+    # Alle Embeddings laden + Dateiname via JOIN
     cursor.execute("""
-        SELECT id, face_embedding, person_name, detected_at
-        FROM cam2_detected_faces
-        WHERE face_embedding IS NOT NULL
-        ORDER BY id
+        SELECT
+            f.id,
+            f.face_embedding,
+            f.person_name,
+            f.detected_at,
+            r.annotated_image_path
+        FROM cam2_detected_faces f
+        JOIN cam2_recordings r ON f.recording_id = r.id
+        WHERE f.face_embedding IS NOT NULL
+        ORDER BY f.id
     """)
     rows = cursor.fetchall()
 
@@ -30,11 +36,13 @@ def main():
     embeddings = []
     metadata = []
 
-    for face_id, embedding_bytes, person_name, detected_at in rows:
+    for face_id, embedding_bytes, person_name, detected_at, image_path in rows:
         embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
         face_ids.append(face_id)
         embeddings.append(embedding)
-        metadata.append((person_name, detected_at))
+        # Nur Dateiname ohne Pfad
+        filename = image_path.split('/')[-1] if image_path else 'N/A'
+        metadata.append((person_name, detected_at, filename))
 
     embeddings_array = np.array(embeddings)
 
@@ -44,11 +52,11 @@ def main():
     # Distanz-Matrix berechnen
     distances = euclidean_distances(embeddings_normalized)
 
-    print("=" * 120)
+    print("=" * 160)
     print("ALLE EMBEDDING-DISTANZEN (paarweise)")
-    print("=" * 120)
-    print(f"{'Face 1':<8} {'Name 1':<15} {'Face 2':<8} {'Name 2':<15} {'Distanz':<10} {'Ähnlich?':<15}")
-    print("-" * 120)
+    print("=" * 160)
+    print(f"{'Face 1':<8} {'Name 1':<12} {'Datei 1':<40} {'Face 2':<8} {'Name 2':<12} {'Datei 2':<40} {'Distanz':<10} {'Ähnlich?':<10}")
+    print("-" * 160)
 
     # Alle Paare anzeigen
     pairs = []
@@ -56,25 +64,25 @@ def main():
     for i in range(n):
         for j in range(i+1, n):
             pairs.append((
-                face_ids[i], metadata[i][0],
-                face_ids[j], metadata[j][0],
+                face_ids[i], metadata[i][0], metadata[i][2],  # id, name, filename
+                face_ids[j], metadata[j][0], metadata[j][2],  # id, name, filename
                 distances[i, j]
             ))
 
     # Sortiere nach Distanz
-    pairs.sort(key=lambda x: x[4])
+    pairs.sort(key=lambda x: x[6])
 
-    for face1, name1, face2, name2, dist in pairs:
-        similar = "✅ Sehr ähnlich" if dist <= 0.5 else "❌ Verschieden"
-        print(f"{face1:<8} {name1:<15} {face2:<8} {name2:<15} {dist:<10.4f} {similar:<15}")
+    for face1, name1, file1, face2, name2, file2, dist in pairs:
+        similar = "✅ < 0.5" if dist <= 0.5 else "❌ > 0.5"
+        print(f"{face1:<8} {name1:<12} {file1:<40} {face2:<8} {name2:<12} {file2:<40} {dist:<10.4f} {similar:<10}")
 
-    print("-" * 120)
-    close_pairs = sum(1 for p in pairs if p[4] <= 0.5)
+    print("-" * 160)
+    close_pairs = sum(1 for p in pairs if p[6] <= 0.5)
     print(f"Paare mit Distanz ≤ 0.5: {close_pairs}/{len(pairs)}")
-    print(f"Kleinste Distanz: {pairs[0][4]:.4f}")
-    print(f"Größte Distanz: {pairs[-1][4]:.4f}")
-    print(f"Durchschnitt: {np.mean([p[4] for p in pairs]):.4f}")
-    print("=" * 120)
+    print(f"Kleinste Distanz: {pairs[0][6]:.4f} (Face {pairs[0][0]} + {pairs[0][3]})")
+    print(f"Größte Distanz: {pairs[-1][6]:.4f} (Face {pairs[-1][0]} + {pairs[-1][3]})")
+    print(f"Durchschnitt: {np.mean([p[6] for p in pairs]):.4f}")
+    print("=" * 160)
 
     cursor.close()
     conn.close()
