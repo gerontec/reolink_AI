@@ -1,0 +1,15 @@
+[Unit]
+Description=Reolink AI Timer - Run every 2 minutes
+Requires=reolink-ai.service
+
+[Timer]
+# Run every 2 minutes
+OnBootSec=1min
+OnUnitActiveSec=2min
+
+# Don't accumulate missed runs
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

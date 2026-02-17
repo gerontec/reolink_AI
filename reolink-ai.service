@@ -1,0 +1,32 @@
+[Unit]
+Description=Reolink AI - Process New Media Files
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=oneshot
+User=gh
+Group=gh
+WorkingDirectory=/home/user/reolink_AI
+
+# GPU Environment
+Environment="CUDA_VISIBLE_DEVICES=0"
+Environment="PYTHONUNBUFFERED=1"
+
+# Process all new files (limit 50 per run to avoid overload)
+ExecStart=/usr/bin/python3 /home/user/reolink_AI/person.py --limit 50
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reolink-ai
+
+# Resource limits
+MemoryMax=4G
+CPUQuota=200%
+
+# Timeout (max 10 minutes per run)
+TimeoutSec=600
+
+[Install]
+WantedBy=multi-user.target
