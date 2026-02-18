@@ -6,6 +6,7 @@ Playwright: Login + Cover-Image-href → Issue-ID → Download
 Verwendung:
   python3 merkur_download.py                   # heute
   python3 merkur_download.py --date 20260218   # bestimmtes Datum
+  python3 merkur_download.py --backfill        # rückwärts ab gestern (skip So, Feiertage, vorhandene)
 
 Installation:
   pip install playwright
@@ -20,7 +21,7 @@ import sys
 import json
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -220,11 +221,114 @@ def run(date_str: str, output_path: Path) -> bool:
     return True
 
 
+def _easter(year: int) -> datetime:
+    """Berechnet Ostersonntag (Gregorianischer Kalender)."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day   = ((h + l - 7 * m + 114) % 31) + 1
+    return datetime(year, month, day)
+
+
+def is_bavarian_holiday(day: datetime) -> bool:
+    """Gibt True zurück wenn der Tag ein bayerischer Feiertag ist."""
+    # Erst: holidays-Paket versuchen (Bayern = BY)
+    try:
+        import holidays
+        by_holidays = holidays.Germany(state='BY', years=day.year)
+        return day.date() in by_holidays
+    except ImportError:
+        pass
+
+    # Fallback: manuelle Berechnung
+    md = (day.month, day.day)
+    # Feste Feiertage (Bayern)
+    fixed = {
+        (1, 1),   # Neujahr
+        (1, 6),   # Heilige Drei Könige
+        (5, 1),   # Tag der Arbeit
+        (10, 3),  # Tag der deutschen Einheit
+        (11, 1),  # Allerheiligen
+        (12, 25), # 1. Weihnachtstag
+        (12, 26), # 2. Weihnachtstag
+    }
+    if md in fixed:
+        return True
+
+    # Bewegliche Feiertage (Oster-basiert)
+    easter = _easter(day.year)
+    moveable = {
+        easter + timedelta(days=-2),   # Karfreitag
+        easter + timedelta(days=1),    # Ostermontag
+        easter + timedelta(days=39),   # Christi Himmelfahrt
+        easter + timedelta(days=50),   # Pfingstmontag
+        easter + timedelta(days=60),   # Fronleichnam (Bayern)
+    }
+    return day.replace(hour=0, minute=0, second=0, microsecond=0) in moveable
+
+
+def backfill():
+    """Lädt alle fehlenden Ausgaben rückwärts ab gestern bis zum ersten Fehler."""
+    day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    while True:
+        # Sonntage überspringen
+        if day.weekday() == 6:
+            logger.info(f'Sonntag übersprungen: {day.strftime("%d.%m.%Y")}')
+            day -= timedelta(days=1)
+            continue
+
+        # Bayerische Feiertage überspringen
+        if is_bavarian_holiday(day):
+            logger.info(f'Feiertag übersprungen: {day.strftime("%d.%m.%Y")}')
+            day -= timedelta(days=1)
+            continue
+
+        date_str = day.strftime('%d.%m.%Y')
+        fname    = day.strftime('%Y-%m-%d')
+        output   = DOWNLOAD_DIR / f'toelzer-kurier-{fname}.pdf'
+
+        # Bereits vorhanden → weiter zurück
+        if output.exists():
+            logger.info(f'Bereits vorhanden: {output} – übersprungen')
+            day -= timedelta(days=1)
+            continue
+
+        logger.info(f'── Backfill: {date_str} ──')
+        success = run(date_str, output)
+
+        if not success:
+            output.unlink(missing_ok=True)
+            logger.info(f'Fehler bei {date_str} – Backfill beendet.')
+            sys.exit(1)
+
+        day -= timedelta(days=1)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Tölzer Kurier PDF-Download')
     parser.add_argument('--date', metavar='YYYYMMDD',
                         help='Datum der Ausgabe (Standard: heute)')
+    parser.add_argument('--backfill', action='store_true',
+                        help='Rückwärts ab gestern laden – überspringt Sonntage, '
+                             'bayerische Feiertage und bereits vorhandene PDFs; '
+                             'stoppt beim ersten Fehler')
     args = parser.parse_args()
+
+    if args.backfill:
+        backfill()
+        return
 
     if args.date:
         try:
