@@ -88,137 +88,146 @@ def find_issue_id_in_json(data, depth=0) -> str | None:
     return None
 
 
-def run(date_str: str, output_path: Path) -> bool:
+def _make_browser_context(pw):
+    """Erstellt einen neuen Playwright-Browser-Context."""
+    browser = pw.chromium.launch(headless=True)
+    ctx = browser.new_context(
+        user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                   '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        accept_downloads=True,
+    )
+    return browser, ctx
+
+
+def _login(page) -> bool:
+    """Führt Login durch. Gibt True bei Erfolg zurück."""
+    logger.info(f'Öffne Login: {LOGIN_URL}')
+    page.goto(LOGIN_URL, wait_until='domcontentloaded')
+    dismiss_cookie_banner(page)
+
+    page.wait_for_selector('input[name="email"]', timeout=20_000)
+    page.locator('input[name="email"]').fill(USER)
+    page.locator('input[type="password"]').fill(PASSWD)
+    dismiss_cookie_banner(page)
+    page.locator('input[type="submit"]').click()
+
+    try:
+        page.wait_for_load_state('networkidle', timeout=20_000)
+    except PlaywrightTimeout:
+        pass
+
+    if page.locator('input[type="password"]').count() > 0:
+        logger.error(f'Login fehlgeschlagen – URL: {page.url}')
+        debug_page(page, '01_login_fail')
+        return False
+
+    logger.info(f'✓ Login OK  (URL: {page.url})')
+    return True
+
+
+def _download_edition(page, ctx, date_str: str, output_path: Path) -> bool:
+    """Lädt eine Ausgabe herunter. Setzt eingeloggten page/ctx voraus."""
     edition_url = f'{BASE_URL}/{PUBLICATION}/{date_str}'
     issue_id    = None
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        ctx = browser.new_context(
-            user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
-                       '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            accept_downloads=True,
-        )
-        page = ctx.new_page()
+    # ── Netzwerk-Requests belauschen ────────────────────────────────────────
+    captured_requests = []
 
-        # ── Netzwerk-Requests belauschen (Fallback falls kein Cover-Image) ──
-        captured_requests = []   # (kind, url, iid, is_own_domain)
+    def on_response(resp):
+        url = resp.url
+        is_own_domain = 'abo.merkur.de' in url
+        for pat in [r'/download/issue/(\d{5,})', r'/issues?/(\d{5,})',
+                    r'[?&]issue[Ii]d=(\d{5,})']:
+            m = re.search(pat, url)
+            if m:
+                captured_requests.append(('url', url, m.group(1), is_own_domain))
+        ct = resp.headers.get('content-type', '')
+        if 'json' in ct and resp.status == 200 and is_own_domain:
+            try:
+                body = resp.json()
+                iid  = find_issue_id_in_json(body)
+                if iid:
+                    captured_requests.append(('json', url, iid, True))
+            except Exception:
+                pass
 
-        def on_response(resp):
-            url  = resp.url
-            is_own_domain = 'abo.merkur.de' in url
-            for pat in [r'/download/issue/(\d{5,})', r'/issues?/(\d{5,})',
-                        r'[?&]issue[Ii]d=(\d{5,})']:
-                m = re.search(pat, url)
-                if m:
-                    captured_requests.append(('url', url, m.group(1), is_own_domain))
-            ct = resp.headers.get('content-type', '')
-            if 'json' in ct and resp.status == 200 and is_own_domain:
+    page.on('response', on_response)
+
+    # ── Ausgaben-Seite laden ─────────────────────────────────────────────────
+    logger.info(f'Lade Ausgabe: {edition_url}')
+    captured_requests.clear()
+
+    try:
+        page.goto(edition_url, wait_until='networkidle', timeout=30_000)
+    except PlaywrightTimeout:
+        logger.warning('networkidle timeout – fahre fort')
+    page.wait_for_timeout(3_000)
+
+    # Prio 1: abo.merkur.de API-Request mit Issue-ID
+    for kind, u, iid, own in captured_requests:
+        if own:
+            issue_id = iid
+            logger.info(f'Issue-ID aus API: {issue_id}  ({u})')
+            break
+
+    # Prio 2: Cover-Image Parent-href → /webreader/895556
+    if not issue_id:
+        cover_loc = page.locator('img[src*="s4p-iapps.com"], img[src*="s4p"]')
+        if cover_loc.count() > 0:
+            href = cover_loc.first.locator('xpath=..').get_attribute('href') or ''
+            m = re.search(r'[/#](\d{5,})', href)
+            if m:
+                issue_id = m.group(1)
+                logger.info(f'Issue-ID aus Cover-href: {issue_id}')
+            else:
                 try:
-                    body = resp.json()
-                    iid  = find_issue_id_in_json(body)
-                    if iid:
-                        captured_requests.append(('json', url, iid, True))
-                except Exception:
-                    pass
-
-        page.on('response', on_response)
-
-        # ── 1. Login ────────────────────────────────────────────────────────
-        logger.info(f'Öffne Login: {LOGIN_URL}')
-        page.goto(LOGIN_URL, wait_until='domcontentloaded')
-        dismiss_cookie_banner(page)
-
-        page.wait_for_selector('input[name="email"]', timeout=20_000)
-
-        page.locator('input[name="email"]').fill(USER)
-        page.locator('input[type="password"]').fill(PASSWD)
-        dismiss_cookie_banner(page)
-        page.locator('input[type="submit"]').click()
-
-        try:
-            page.wait_for_load_state('networkidle', timeout=20_000)
-        except PlaywrightTimeout:
-            pass
-
-        # Login prüfen
-        if page.locator('input[type="password"]').count() > 0:
-            logger.error(f'Login fehlgeschlagen – URL: {page.url}')
-            debug_page(page, '01_login_fail')
-            browser.close()
-            return False
-
-        logger.info(f'✓ Login OK  (URL: {page.url})')
-
-        # ── 2. Ausgaben-Seite laden + Requests abfangen ─────────────────────
-        logger.info(f'Lade Ausgabe: {edition_url}')
-        captured_requests.clear()
-
-        try:
-            page.goto(edition_url, wait_until='networkidle', timeout=30_000)
-        except PlaywrightTimeout:
-            logger.warning('networkidle timeout – fahre fort')
-        page.wait_for_timeout(3_000)
-
-        # Prio 1: abo.merkur.de API-Request mit Issue-ID (selten, aber ideal)
-        for kind, u, iid, own in captured_requests:
-            if own:
-                issue_id = iid
-                logger.info(f'Issue-ID aus API: {issue_id}  ({u})')
-                break
-
-        # Prio 2: Cover-Image Parent-href → /webreader/895556 enthält Issue-ID
-        # Der Klick auf das Titelbild (s4p-iapps.com) löst Hash-Fragment-Navigation aus
-        # → kein HTTP-Request → Response-Interceptor greift nicht, aber href ist im DOM.
-        if not issue_id:
-            cover_loc = page.locator('img[src*="s4p-iapps.com"], img[src*="s4p"]')
-            if cover_loc.count() > 0:
-                href = cover_loc.first.locator('xpath=..').get_attribute('href') or ''
-                m = re.search(r'[/#](\d{5,})', href)
+                    with ctx.expect_page(timeout=5_000) as np_info:
+                        cover_loc.first.click()
+                    new_url = np_info.value.url
+                except PlaywrightTimeout:
+                    page.wait_for_timeout(2_000)
+                    new_url = page.url
+                m = re.search(r'[/#](\d{5,})', new_url)
                 if m:
                     issue_id = m.group(1)
-                    logger.info(f'Issue-ID aus Cover-href: {issue_id}')
-                else:
-                    # Fallback: Cover klicken und URL abfangen
-                    try:
-                        with ctx.expect_page(timeout=5_000) as np_info:
-                            cover_loc.first.click()
-                        new_url = np_info.value.url
-                    except PlaywrightTimeout:
-                        page.wait_for_timeout(2_000)
-                        new_url = page.url
-                    m = re.search(r'[/#](\d{5,})', new_url)
-                    if m:
-                        issue_id = m.group(1)
-                        logger.info(f'Issue-ID aus Click-Navigation: {issue_id}')
-            else:
-                logger.warning('Kein Cover-Image (s4p-iapps.com) gefunden')
+                    logger.info(f'Issue-ID aus Click-Navigation: {issue_id}')
+        else:
+            logger.warning('Kein Cover-Image (s4p-iapps.com) gefunden')
 
-        if not issue_id:
-            logger.error('Issue-ID nicht gefunden → debug/02_edition_page.html prüfen')
+    if not issue_id:
+        logger.error('Issue-ID nicht gefunden → debug/02_edition_page.html prüfen')
+        return False
+
+    logger.info(f'✓ Issue-ID: {issue_id}')
+
+    # ── PDF herunterladen ────────────────────────────────────────────────────
+    download_url = f'{BASE_URL}/download/issue/{issue_id}'
+    logger.info(f'Download: {download_url}')
+
+    with page.expect_download(timeout=120_000) as dl_info:
+        try:
+            page.goto(download_url)
+        except Exception:
+            pass  # Playwright wirft "Download is starting" – Download läuft trotzdem
+
+    dl = dl_info.value
+    dl.save_as(output_path)
+    size_mb = output_path.stat().st_size / 1024 / 1024
+    logger.info(f'✓ Gespeichert: {output_path} ({size_mb:.1f} MB)')
+    return True
+
+
+def run(date_str: str, output_path: Path) -> bool:
+    """Einzelner Download (eigene Browser-Session mit Login)."""
+    with sync_playwright() as pw:
+        browser, ctx = _make_browser_context(pw)
+        page = ctx.new_page()
+        if not _login(page):
             browser.close()
             return False
-
-        logger.info(f'✓ Issue-ID: {issue_id}')
-
-        # ── 3. PDF herunterladen ────────────────────────────────────────────
-        download_url = f'{BASE_URL}/download/issue/{issue_id}'
-        logger.info(f'Download: {download_url}')
-
-        with page.expect_download(timeout=120_000) as dl_info:
-            try:
-                page.goto(download_url)
-            except Exception:
-                pass  # Playwright wirft "Download is starting" – Download läuft trotzdem
-
-        dl = dl_info.value
-        dl.save_as(output_path)
-        size_mb = output_path.stat().st_size / 1024 / 1024
-        logger.info(f'✓ Gespeichert: {output_path} ({size_mb:.1f} MB)')
-
+        ok = _download_edition(page, ctx, date_str, output_path)
         browser.close()
-
-    return True
+    return ok
 
 
 def _easter(year: int) -> datetime:
@@ -278,42 +287,52 @@ def is_bavarian_holiday(day: datetime) -> bool:
 
 
 def backfill():
-    """Lädt alle fehlenden Ausgaben rückwärts ab gestern bis zum ersten Fehler."""
+    """Lädt alle fehlenden Ausgaben rückwärts ab gestern bis zum ersten Fehler.
+    Login wird nur einmal durchgeführt – Browser bleibt für alle Downloads offen."""
     day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    while True:
-        # Sonntage überspringen
-        if day.weekday() == 6:
-            logger.info(f'Sonntag übersprungen: {day.strftime("%d.%m.%Y")}')
-            day -= timedelta(days=1)
-            continue
+    with sync_playwright() as pw:
+        browser, ctx = _make_browser_context(pw)
+        page = ctx.new_page()
 
-        # Bayerische Feiertage überspringen
-        if is_bavarian_holiday(day):
-            logger.info(f'Feiertag übersprungen: {day.strftime("%d.%m.%Y")}')
-            day -= timedelta(days=1)
-            continue
-
-        date_str = day.strftime('%d.%m.%Y')
-        fname    = day.strftime('%Y-%m-%d')
-        output   = DOWNLOAD_DIR / f'toelzer-kurier-{fname}.pdf'
-
-        # Bereits vorhanden → weiter zurück
-        if output.exists():
-            logger.info(f'Bereits vorhanden: {output} – übersprungen')
-            day -= timedelta(days=1)
-            continue
-
-        logger.info(f'── Backfill: {date_str} ──')
-        success = run(date_str, output)
-
-        if not success:
-            output.unlink(missing_ok=True)
-            logger.info(f'Fehler bei {date_str} – Backfill beendet.')
+        if not _login(page):
+            browser.close()
             sys.exit(1)
 
-        day -= timedelta(days=1)
+        while True:
+            # Sonntage überspringen
+            if day.weekday() == 6:
+                logger.info(f'Sonntag übersprungen: {day.strftime("%d.%m.%Y")}')
+                day -= timedelta(days=1)
+                continue
+
+            # Bayerische Feiertage überspringen
+            if is_bavarian_holiday(day):
+                logger.info(f'Feiertag übersprungen: {day.strftime("%d.%m.%Y")}')
+                day -= timedelta(days=1)
+                continue
+
+            date_str = day.strftime('%d.%m.%Y')
+            fname    = day.strftime('%Y-%m-%d')
+            output   = DOWNLOAD_DIR / f'toelzer-kurier-{fname}.pdf'
+
+            # Bereits vorhanden → weiter zurück
+            if output.exists():
+                logger.info(f'Bereits vorhanden: {output} – übersprungen')
+                day -= timedelta(days=1)
+                continue
+
+            logger.info(f'── Backfill: {date_str} ──')
+            success = _download_edition(page, ctx, date_str, output)
+
+            if not success:
+                output.unlink(missing_ok=True)
+                logger.info(f'Fehler bei {date_str} – Backfill beendet.')
+                browser.close()
+                sys.exit(1)
+
+            day -= timedelta(days=1)
 
 
 def main():
