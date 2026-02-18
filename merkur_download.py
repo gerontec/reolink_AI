@@ -259,7 +259,10 @@ def run(date_str: str, output_path: Path) -> bool:
         logger.info(f'Download: {download_url}')
 
         with page.expect_download(timeout=120_000) as dl_info:
-            page.goto(download_url)
+            try:
+                page.goto(download_url)
+            except Exception:
+                pass  # Playwright wirft "Download is starting" – Download läuft trotzdem
 
         dl = dl_info.value
         dl.save_as(output_path)
