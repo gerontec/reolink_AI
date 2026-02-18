@@ -99,21 +99,25 @@ def run(date_str: str, output_path: Path) -> bool:
         captured_requests = []
 
         def on_response(resp):
-            url = resp.url
+            url  = resp.url
+            # Nur abo.merkur.de-Antworten für Issue-ID auswerten
+            is_own_domain = 'abo.merkur.de' in url
             # Issue-ID direkt in URL
-            for pat in [r'/issues?/(\d{5,})', r'/download/issue/(\d{5,})',
+            for pat in [r'/download/issue/(\d{5,})', r'/issues?/(\d{5,})',
                         r'[?&]issue[Ii]d=(\d{5,})']:
                 m = re.search(pat, url)
                 if m:
-                    captured_requests.append(('url', url, m.group(1)))
-            # JSON-Antworten auf Inhalt prüfen
+                    captured_requests.append(('url', url, m.group(1), is_own_domain))
+            # JSON-Antworten auf Inhalt prüfen (nur eigene Domain)
+            if not is_own_domain:
+                return
             ct = resp.headers.get('content-type', '')
             if 'json' in ct and resp.status == 200:
                 try:
                     body = resp.json()
                     iid  = find_issue_id_in_json(body)
                     if iid:
-                        captured_requests.append(('json', url, iid))
+                        captured_requests.append(('json', url, iid, True))
                 except Exception:
                     pass
 
@@ -157,28 +161,59 @@ def run(date_str: str, output_path: Path) -> bool:
         # Alle abgefangenen Requests mit Issue-ID ausgeben
         if captured_requests:
             logger.info(f'API-Requests mit Issue-ID ({len(captured_requests)}):')
-            for kind, url, iid in captured_requests:
-                logger.info(f'  [{kind}] {iid} ← {url}')
-            # Beste ID: aus URL bevorzugen
-            for kind, url, iid in captured_requests:
-                if kind == 'url' and 'download' in url:
+            for kind, url, iid, own in captured_requests:
+                domain_tag = 'own' if own else 'extern'
+                logger.info(f'  [{kind}/{domain_tag}] {iid} ← {url}')
+
+            # Beste ID: abo.merkur.de download-URL hat höchste Priorität
+            for kind, url, iid, own in captured_requests:
+                if own and kind == 'url' and 'download' in url:
                     issue_id = iid
                     break
+            # 2. Priorität: beliebige abo.merkur.de URL
             if not issue_id:
+                for kind, url, iid, own in captured_requests:
+                    if own and kind == 'url':
+                        issue_id = iid
+                        break
+            # 3. Priorität: abo.merkur.de JSON
+            if not issue_id:
+                for kind, url, iid, own in captured_requests:
+                    if own and kind == 'json':
+                        issue_id = iid
+                        break
+            # 4. letzter Ausweg: externe Requests (wahrscheinlich falsch)
+            if not issue_id:
+                logger.warning('Kein abo.merkur.de Request mit Issue-ID – nutze externen Fallback')
                 issue_id = captured_requests[0][2]
         else:
             logger.warning('Keine API-Requests mit Issue-ID abgefangen')
 
-        # Fallback: direkt im HTML suchen
+        # Fallback 1: direkt im HTML nach Download-Links suchen
         if not issue_id:
             content = page.content()
-            for pat in [r'/download/issue/(\d+)', r'webreader[^"\']+#/(\d+)/',
-                        r'"issueId"\s*:\s*"?(\d+)"?', r'issue[/_](\d{5,})']:
+            for pat in [r'/download/issue/(\d{5,})', r'"issueId"\s*:\s*"?(\d{5,})"?',
+                        r'webreader[^"\']+#/(\d{5,})/', r'issue[/_](\d{5,})']:
                 m = re.search(pat, content)
                 if m:
                     issue_id = m.group(1)
-                    logger.info(f'Issue-ID im HTML gefunden: {issue_id}')
+                    logger.info(f'Issue-ID im HTML gefunden (Pattern: {pat}): {issue_id}')
                     break
+
+        # Fallback 2: Download-Button klicken und URL abfangen
+        if not issue_id:
+            logger.info('Versuche Download-Button zu klicken...')
+            for sel in ['a[href*="download/issue"]', 'a[href*="/download"]',
+                        'button:has-text("Download")', 'a:has-text("PDF")',
+                        'a:has-text("Download")']:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    href = loc.first.get_attribute('href') or ''
+                    m = re.search(r'/download/issue/(\d{5,})', href)
+                    if m:
+                        issue_id = m.group(1)
+                        logger.info(f'Issue-ID aus Download-Link: {issue_id}  ({href})')
+                        break
 
         if not issue_id:
             logger.error('Issue-ID nicht gefunden → debug/02_edition_page.html prüfen')
