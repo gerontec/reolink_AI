@@ -72,13 +72,16 @@ def load_face_embeddings(conn) -> Tuple[List[int], np.ndarray]:
 
     return face_ids, embeddings_array
 
-def cluster_faces(embeddings: np.ndarray, eps: float = 0.5, min_samples: int = 2) -> np.ndarray:
+def cluster_faces(embeddings: np.ndarray, eps: float = 0.4, min_samples: int = 2) -> np.ndarray:
     """
     Clustert Gesichter mit DBSCAN basierend auf Cosine Distance
 
     Args:
         embeddings: numpy array (N, 512) mit Face Embeddings
-        eps: Maximum distance für Cluster (ArcFace: 0.4-0.6 ist gut)
+        eps: Cosine Distance Threshold (0=identisch, 1=orthogonal)
+             eps=0.4 → cosine_similarity > 0.6  (realistisch für echte Gesichter)
+             eps=0.3 → cosine_similarity > 0.7  (strenger)
+             eps=0.5 → cosine_similarity > 0.5  (lockerer)
         min_samples: Mindestanzahl Samples pro Cluster
 
     Returns:
@@ -88,28 +91,24 @@ def cluster_faces(embeddings: np.ndarray, eps: float = 0.5, min_samples: int = 2
     if len(embeddings) == 0:
         return np.array([])
 
-    logger.info(f"Starte DBSCAN Clustering (eps={eps}, min_samples={min_samples})...")
+    cosine_sim_threshold = round(1.0 - eps, 2)
+    logger.info(f"Starte DBSCAN Clustering (eps={eps} cosine_dist → cosine_sim > {cosine_sim_threshold}, min_samples={min_samples})...")
 
-    # DBSCAN mit Cosine Distance
-    # ArcFace Embeddings sind normalized, daher: cosine_distance = 1 - dot_product
-    # Aber DBSCAN erwartet Euclidean Distance, also konvertieren wir:
-    # Für normalized vectors: euclidean_distance² = 2 * (1 - cosine_similarity)
-    # Deshalb normalisieren wir erst die Embeddings (falls nicht schon normalized)
-
-    # Embeddings normalisieren (L2-Norm)
-    embeddings_normalized = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
-
-    # DBSCAN mit Euclidean Distance (auf normalized embeddings = approximiert Cosine)
-    # eps Parameter: 0.5 entspricht ca. cosine similarity von 0.875 (sehr ähnlich)
-    # Kleinere eps = strengere Cluster
+    # DBSCAN mit direkter Cosine Distance
+    # cosine_distance = 1 - cosine_similarity  (sklearn-Konvention)
+    # Vorteil gegenüber euclidean auf normalisierten Vektoren:
+    #   - präziser, keine Näherung nötig
+    #   - eps direkt als cosine_distance interpretierbar
+    # Früherer Bug: metric='euclidean' mit eps=0.5 erforderte cosine_sim > 0.875
+    #   was für reale Gesichter unter verschiedenen Bedingungen viel zu streng war.
     dbscan = DBSCAN(
         eps=eps,
         min_samples=min_samples,
-        metric='euclidean',  # Auf normalized vectors ≈ Cosine Distance
-        n_jobs=-1  # Alle CPU-Kerne nutzen
+        metric='cosine',  # Direkte Cosine Distance, keine manuelle Normalisierung nötig
+        n_jobs=-1         # Alle CPU-Kerne nutzen
     )
 
-    cluster_labels = dbscan.fit_predict(embeddings_normalized)
+    cluster_labels = dbscan.fit_predict(embeddings)
 
     # Statistiken
     n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
@@ -122,7 +121,7 @@ def cluster_faces(embeddings: np.ndarray, eps: float = 0.5, min_samples: int = 2
     # Silhouette Score (nur wenn genug Cluster vorhanden)
     if n_clusters > 1 and n_noise < len(cluster_labels):
         try:
-            score = silhouette_score(embeddings_normalized, cluster_labels)
+            score = silhouette_score(embeddings, cluster_labels, metric='cosine')
             logger.info(f"  Silhouette Score: {score:.3f} (0=schlecht, 1=perfekt)")
         except:
             pass  # Silhouette Score kann manchmal fehlschlagen
@@ -263,15 +262,12 @@ def print_cluster_statistics(conn):
 
     cursor.close()
 
-def analyze_embedding_distances(face_ids: List[int], embeddings: np.ndarray, top_n: int = 20):
-    """Analysiert die Distanzen zwischen allen Face Embeddings"""
-    from sklearn.metrics.pairwise import euclidean_distances
+def analyze_embedding_distances(face_ids: List[int], embeddings: np.ndarray, top_n: int = 20, eps: float = 0.4):
+    """Analysiert die Cosine-Distanzen zwischen allen Face Embeddings"""
+    from sklearn.metrics.pairwise import cosine_distances
 
-    # Normalisieren (wie im Clustering)
-    embeddings_normalized = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
-
-    # Distanz-Matrix berechnen
-    distances = euclidean_distances(embeddings_normalized)
+    # Cosine-Distanz-Matrix berechnen (0=identisch, 1=orthogonal, 2=entgegengesetzt)
+    distances = cosine_distances(embeddings)
 
     # Finde die ähnlichsten Paare (kleinste Distanzen, außer diagonal)
     similar_pairs = []
@@ -284,21 +280,22 @@ def analyze_embedding_distances(face_ids: List[int], embeddings: np.ndarray, top
     similar_pairs.sort(key=lambda x: x[2])
 
     print("\n" + "=" * 80)
-    print("  EMBEDDING DISTANZ-ANALYSE")
+    print("  EMBEDDING DISTANZ-ANALYSE (Cosine)")
     print("=" * 80)
-    print(f"{'Face ID 1':<12} {'Face ID 2':<12} {'Distanz':<12} {'Status (eps=0.5)':<20}")
+    print(f"{'Face ID 1':<12} {'Face ID 2':<12} {'Cos-Dist':<12} {'Cos-Sim':<10} {f'Status (eps={eps})':<22}")
     print("-" * 80)
 
     for face_id1, face_id2, dist in similar_pairs[:top_n]:
-        status = "✅ Würde clustern" if dist <= 0.5 else "❌ Zu weit entfernt"
-        print(f"{face_id1:<12} {face_id2:<12} {dist:<12.4f} {status:<20}")
+        cosine_sim = 1.0 - dist
+        status = f"✅ Würde clustern" if dist <= eps else "❌ Zu weit entfernt"
+        print(f"{face_id1:<12} {face_id2:<12} {dist:<12.4f} {cosine_sim:<10.4f} {status:<22}")
 
     # Statistiken
-    close_pairs = sum(1 for _, _, d in similar_pairs if d <= 0.5)
+    close_pairs = sum(1 for _, _, d in similar_pairs if d <= eps)
     print("-" * 80)
-    print(f"Paare innerhalb eps=0.5: {close_pairs}/{len(similar_pairs)}")
-    print(f"Min Distanz: {similar_pairs[0][2]:.4f}")
-    print(f"Max Distanz: {similar_pairs[-1][2]:.4f}")
+    print(f"Paare innerhalb eps={eps}: {close_pairs}/{len(similar_pairs)}")
+    print(f"Min Distanz: {similar_pairs[0][2]:.4f}  (cosine_sim={1-similar_pairs[0][2]:.4f})")
+    print(f"Max Distanz: {similar_pairs[-1][2]:.4f}  (cosine_sim={1-similar_pairs[-1][2]:.4f})")
     print(f"Durchschnitt: {np.mean([d for _, _, d in similar_pairs]):.4f}")
     print("=" * 80)
 
@@ -310,10 +307,13 @@ def main():
     logger.info("=" * 80)
 
     # Parameter
-    EPS = 0.5  # Cosine Distance Threshold (kleiner = strengere Cluster)
+    # Cosine Distance: 0=identisch, 1=orthogonal
+    # eps=0.4 → cosine_similarity > 0.6  (realistisch für echte Gesichter)
+    # Früherer Wert eps=0.5 mit metric='euclidean' entsprach cosine_sim > 0.875 → viel zu streng
+    EPS = 0.4
     MIN_SAMPLES = 2  # Mindestens 2 Gesichter pro Cluster
 
-    logger.info(f"Parameter: eps={EPS}, min_samples={MIN_SAMPLES}")
+    logger.info(f"Parameter: eps={EPS} (cosine_dist, ≙ cosine_sim > {1-EPS:.1f}), min_samples={MIN_SAMPLES}")
 
     # Datenbank verbinden
     conn = connect_db()
@@ -327,7 +327,7 @@ def main():
             return
 
         # 1.5 Distanz-Analyse (Debug)
-        analyze_embedding_distances(face_ids, embeddings, top_n=20)
+        analyze_embedding_distances(face_ids, embeddings, top_n=20, eps=EPS)
 
         # 2. Clustering durchführen
         cluster_labels = cluster_faces(embeddings, eps=EPS, min_samples=MIN_SAMPLES)
