@@ -96,28 +96,33 @@ def run(date_str: str, output_path: Path) -> bool:
         page = ctx.new_page()
 
         # ── Netzwerk-Requests belauschen ────────────────────────────────────
-        captured_requests = []
+        captured_requests = []   # (kind, url, iid, is_own_domain)
+        all_own_responses = []   # alle abo.merkur.de Response-URLs (für Debug)
 
         def on_response(resp):
             url  = resp.url
-            # Nur abo.merkur.de-Antworten für Issue-ID auswerten
             is_own_domain = 'abo.merkur.de' in url
+            if is_own_domain:
+                all_own_responses.append((resp.status, url))
             # Issue-ID direkt in URL
             for pat in [r'/download/issue/(\d{5,})', r'/issues?/(\d{5,})',
                         r'[?&]issue[Ii]d=(\d{5,})']:
                 m = re.search(pat, url)
                 if m:
                     captured_requests.append(('url', url, m.group(1), is_own_domain))
-            # JSON-Antworten auf Inhalt prüfen (nur eigene Domain)
-            if not is_own_domain:
-                return
+            # JSON-Antworten auf Inhalt prüfen
             ct = resp.headers.get('content-type', '')
             if 'json' in ct and resp.status == 200:
                 try:
                     body = resp.json()
                     iid  = find_issue_id_in_json(body)
                     if iid:
-                        captured_requests.append(('json', url, iid, True))
+                        captured_requests.append(('json', url, iid, is_own_domain))
+                    # Alle abo.merkur.de JSON-Bodies speichern
+                    if is_own_domain:
+                        safe = re.sub(r'[^a-zA-Z0-9]', '_', url[len('https://abo.merkur.de'):])[:60]
+                        (DEBUG_DIR / f'api_{safe}.json').write_text(
+                            json.dumps(body, indent=2, ensure_ascii=False), encoding='utf-8')
                 except Exception:
                     pass
 
@@ -152,68 +157,120 @@ def run(date_str: str, output_path: Path) -> bool:
         # ── 2. Ausgaben-Seite laden + Requests abfangen ─────────────────────
         logger.info(f'Lade Ausgabe: {edition_url}')
         captured_requests.clear()
-        page.goto(edition_url, wait_until='networkidle', timeout=30_000)
+        all_own_responses.clear()
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Etwas warten damit SPA vollständig geladen ist
+        try:
+            page.goto(edition_url, wait_until='networkidle', timeout=30_000)
+        except PlaywrightTimeout:
+            logger.warning('networkidle timeout – fahre fort')
         page.wait_for_timeout(3_000)
         debug_page(page, '02_edition_page')
 
-        # Alle abgefangenen Requests mit Issue-ID ausgeben
+        # Alle abo.merkur.de Responses loggen (Debug)
+        logger.info(f'abo.merkur.de Responses ({len(all_own_responses)}):')
+        for status, u in all_own_responses:
+            logger.info(f'  {status} {u}')
+
+        def pick_best_id():
+            # Prio 1: abo.merkur.de URL mit /download/
+            for kind, u, iid, own in captured_requests:
+                if own and kind == 'url' and 'download' in u:
+                    return iid
+            # Prio 2: beliebige abo.merkur.de URL
+            for kind, u, iid, own in captured_requests:
+                if own and kind == 'url':
+                    return iid
+            # Prio 3: abo.merkur.de JSON
+            for kind, u, iid, own in captured_requests:
+                if own and kind == 'json':
+                    return iid
+            return None
+
         if captured_requests:
             logger.info(f'API-Requests mit Issue-ID ({len(captured_requests)}):')
-            for kind, url, iid, own in captured_requests:
-                domain_tag = 'own' if own else 'extern'
-                logger.info(f'  [{kind}/{domain_tag}] {iid} ← {url}')
-
-            # Beste ID: abo.merkur.de download-URL hat höchste Priorität
-            for kind, url, iid, own in captured_requests:
-                if own and kind == 'url' and 'download' in url:
-                    issue_id = iid
-                    break
-            # 2. Priorität: beliebige abo.merkur.de URL
+            for kind, u, iid, own in captured_requests:
+                logger.info(f'  [{kind}/{"own" if own else "extern"}] {iid} ← {u}')
+            issue_id = pick_best_id()
             if not issue_id:
-                for kind, url, iid, own in captured_requests:
-                    if own and kind == 'url':
-                        issue_id = iid
-                        break
-            # 3. Priorität: abo.merkur.de JSON
-            if not issue_id:
-                for kind, url, iid, own in captured_requests:
-                    if own and kind == 'json':
-                        issue_id = iid
-                        break
-            # 4. letzter Ausweg: externe Requests (wahrscheinlich falsch)
-            if not issue_id:
-                logger.warning('Kein abo.merkur.de Request mit Issue-ID – nutze externen Fallback')
-                issue_id = captured_requests[0][2]
+                logger.warning('Kein abo.merkur.de Request mit Issue-ID')
         else:
             logger.warning('Keine API-Requests mit Issue-ID abgefangen')
 
-        # Fallback 1: direkt im HTML nach Download-Links suchen
+        # Fallback 1: alle <a href> Links auf der Seite ausgeben + durchsuchen
+        if not issue_id:
+            hrefs = page.eval_on_selector_all('a[href]', 'els => els.map(e => e.getAttribute("href"))')
+            dl_links = [h for h in hrefs if h and '/download/issue/' in h]
+            logger.info(f'Download-Links auf Seite: {dl_links}')
+            if dl_links:
+                m = re.search(r'/download/issue/(\d{5,})', dl_links[0])
+                if m:
+                    issue_id = m.group(1)
+                    logger.info(f'Issue-ID aus Download-Link: {issue_id}')
+            # Alle Links loggen (erste 30)
+            logger.info(f'Alle Links ({len(hrefs)} gesamt, erste 30): {hrefs[:30]}')
+
+        # Fallback 2: SPA-Datenbloecke + breite Regex im HTML
         if not issue_id:
             content = page.content()
-            for pat in [r'/download/issue/(\d{5,})', r'"issueId"\s*:\s*"?(\d{5,})"?',
-                        r'webreader[^"\']+#/(\d{5,})/', r'issue[/_](\d{5,})']:
+            patterns = [
+                r'/download/issue/(\d{5,})',
+                r'"issueId"\s*:\s*"?(\d{5,})"?',
+                r'"issue_id"\s*:\s*"?(\d{5,})"?',
+                r'"id"\s*:\s*(\d{5,})',          # generisches "id" in JSON blob
+                r'webreader[^"\']+#/(\d{5,})/',
+                r'issue[/_-](\d{5,})',
+                r'__NEXT_DATA__[^{]*(\{.*?\})',   # Next.js SSR data (handled below)
+            ]
+            for pat in patterns[:-1]:
                 m = re.search(pat, content)
                 if m:
                     issue_id = m.group(1)
-                    logger.info(f'Issue-ID im HTML gefunden (Pattern: {pat}): {issue_id}')
+                    logger.info(f'Issue-ID im HTML (Pattern {pat}): {issue_id}')
                     break
-
-        # Fallback 2: Download-Button klicken und URL abfangen
-        if not issue_id:
-            logger.info('Versuche Download-Button zu klicken...')
-            for sel in ['a[href*="download/issue"]', 'a[href*="/download"]',
-                        'button:has-text("Download")', 'a:has-text("PDF")',
-                        'a:has-text("Download")']:
-                loc = page.locator(sel)
-                if loc.count() > 0:
-                    href = loc.first.get_attribute('href') or ''
-                    m = re.search(r'/download/issue/(\d{5,})', href)
+            # Next.js / Nuxt embedded JSON
+            if not issue_id:
+                for spa_pat in [r'id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>',
+                                r'window\.__NUXT__\s*=\s*(\{.*?\})',
+                                r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})']:
+                    m = re.search(spa_pat, content, re.DOTALL)
                     if m:
-                        issue_id = m.group(1)
-                        logger.info(f'Issue-ID aus Download-Link: {issue_id}  ({href})')
-                        break
+                        try:
+                            blob = json.loads(m.group(1))
+                            iid = find_issue_id_in_json(blob)
+                            if iid:
+                                issue_id = iid
+                                logger.info(f'Issue-ID aus SPA-Datenblob: {issue_id}')
+                                break
+                        except Exception:
+                            pass
+
+        # Fallback 3: Publikations-Startseite laden und heutigen Link suchen
+        if not issue_id:
+            pub_url = f'{BASE_URL}/{PUBLICATION}'
+            logger.info(f'Versuche Publikations-Startseite: {pub_url}')
+            captured_requests.clear()
+            all_own_responses.clear()
+            try:
+                page.goto(pub_url, wait_until='networkidle', timeout=30_000)
+            except PlaywrightTimeout:
+                pass
+            page.wait_for_timeout(2_000)
+            debug_page(page, '03_pub_root')
+
+            # Download-Links auf Startseite
+            hrefs = page.eval_on_selector_all('a[href]', 'els => els.map(e => e.getAttribute("href"))')
+            dl_links = [h for h in hrefs if h and '/download/issue/' in h]
+            logger.info(f'Download-Links auf Pub-Startseite: {dl_links}')
+            if dl_links:
+                m = re.search(r'/download/issue/(\d{5,})', dl_links[0])
+                if m:
+                    issue_id = m.group(1)
+                    logger.info(f'Issue-ID von Pub-Startseite: {issue_id}')
+
+            # Auch API-Requests von Startseite prüfen
+            if not issue_id:
+                issue_id = pick_best_id()
 
         if not issue_id:
             logger.error('Issue-ID nicht gefunden → debug/02_edition_page.html prüfen')
