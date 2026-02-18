@@ -210,67 +210,42 @@ def run(date_str: str, output_path: Path) -> bool:
             # Alle Links loggen (erste 30)
             logger.info(f'Alle Links ({len(hrefs)} gesamt, erste 30): {hrefs[:30]}')
 
-        # Fallback 2: SPA-Datenbloecke + breite Regex im HTML
+        # Fallback 2: Cover-Image klicken → Webreader-URL enthält Issue-ID
+        # Flow: Klick auf Cover-Bild (s4p-iapps.com) → Navigation zu
+        #       abo.merkur.de/webreader-v3/index.html#/895556/1-
+        # Hash-Fragment-Navigation erzeugt keinen HTTP-Request → Interceptor greift nicht!
         if not issue_id:
-            content = page.content()
-            patterns = [
-                r'/download/issue/(\d{5,})',
-                r'"issueId"\s*:\s*"?(\d{5,})"?',
-                r'"issue_id"\s*:\s*"?(\d{5,})"?',
-                r'"id"\s*:\s*(\d{5,})',          # generisches "id" in JSON blob
-                r'webreader[^"\']+#/(\d{5,})/',
-                r'issue[/_-](\d{5,})',
-                r'__NEXT_DATA__[^{]*(\{.*?\})',   # Next.js SSR data (handled below)
-            ]
-            for pat in patterns[:-1]:
-                m = re.search(pat, content)
+            cover_sel = 'img[src*="s4p-iapps.com"], img[src*="s4p"]'
+            cover_loc = page.locator(cover_sel)
+            if cover_loc.count() > 0:
+                logger.info(f'Cover-Image gefunden ({cover_loc.count()}x) – prüfe Parent-href...')
+                # Zunächst Parent-<a> href prüfen
+                parent = cover_loc.first.locator('xpath=..')
+                href = parent.get_attribute('href') or ''
+                logger.info(f'Parent href: {href!r}')
+                m = re.search(r'[/#](\d{5,})', href)
                 if m:
                     issue_id = m.group(1)
-                    logger.info(f'Issue-ID im HTML (Pattern {pat}): {issue_id}')
-                    break
-            # Next.js / Nuxt embedded JSON
-            if not issue_id:
-                for spa_pat in [r'id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>',
-                                r'window\.__NUXT__\s*=\s*(\{.*?\})',
-                                r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})']:
-                    m = re.search(spa_pat, content, re.DOTALL)
+                    logger.info(f'Issue-ID aus Parent-href: {issue_id}')
+                else:
+                    # Klick – kann same-page Navigation oder neues Tab öffnen
+                    logger.info('Klicke Cover-Image...')
+                    try:
+                        with ctx.expect_page(timeout=5_000) as new_page_info:
+                            cover_loc.first.click()
+                        new_url = new_page_info.value.url
+                        logger.info(f'Neues Tab: {new_url}')
+                    except PlaywrightTimeout:
+                        # Kein neues Tab → same-page Navigation, kurz auf URL-Änderung warten
+                        page.wait_for_timeout(2_000)
+                        new_url = page.url
+                        logger.info(f'Same-page nach Klick: {new_url}')
+                    m = re.search(r'[/#](\d{5,})', new_url)
                     if m:
-                        try:
-                            blob = json.loads(m.group(1))
-                            iid = find_issue_id_in_json(blob)
-                            if iid:
-                                issue_id = iid
-                                logger.info(f'Issue-ID aus SPA-Datenblob: {issue_id}')
-                                break
-                        except Exception:
-                            pass
-
-        # Fallback 3: Publikations-Startseite laden und heutigen Link suchen
-        if not issue_id:
-            pub_url = f'{BASE_URL}/{PUBLICATION}'
-            logger.info(f'Versuche Publikations-Startseite: {pub_url}')
-            captured_requests.clear()
-            all_own_responses.clear()
-            try:
-                page.goto(pub_url, wait_until='networkidle', timeout=30_000)
-            except PlaywrightTimeout:
-                pass
-            page.wait_for_timeout(2_000)
-            debug_page(page, '03_pub_root')
-
-            # Download-Links auf Startseite
-            hrefs = page.eval_on_selector_all('a[href]', 'els => els.map(e => e.getAttribute("href"))')
-            dl_links = [h for h in hrefs if h and '/download/issue/' in h]
-            logger.info(f'Download-Links auf Pub-Startseite: {dl_links}')
-            if dl_links:
-                m = re.search(r'/download/issue/(\d{5,})', dl_links[0])
-                if m:
-                    issue_id = m.group(1)
-                    logger.info(f'Issue-ID von Pub-Startseite: {issue_id}')
-
-            # Auch API-Requests von Startseite prüfen
-            if not issue_id:
-                issue_id = pick_best_id()
+                        issue_id = m.group(1)
+                        logger.info(f'Issue-ID aus Navigation-URL: {issue_id}')
+            else:
+                logger.info('Kein Cover-Image (s4p-iapps.com) auf Seite gefunden')
 
         if not issue_id:
             logger.error('Issue-ID nicht gefunden → debug/02_edition_page.html prüfen')
