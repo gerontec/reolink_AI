@@ -21,11 +21,12 @@ $stats = [
 
 // Filter
 $show_all = isset($_GET['all']);
-$min_confidence = floatval($_GET['min_conf'] ?? 0.4); // Standard etwas höher für Gesichter
+$min_confidence = floatval($_GET['min_conf'] ?? 0.4); // 0.4 für bekannte Gesichter, Unknown werden trotzdem angezeigt (siehe WHERE)
 $min_size = intval($_GET['min_size'] ?? 40);       // Gesichter sind oft kleiner als ganze Körper
 $limit = intval($_GET['limit'] ?? 5);
 
 // --- Personen/Gesichter abrufen (5 neueste mit hoher Qualität) ---
+// Nur Gesichter mit Cluster-ID (≥2 Erkennungen) zeigen
 $sql = "
     SELECT
         f.id,
@@ -33,27 +34,32 @@ $sql = "
         f.bbox_x1, f.bbox_y1, f.bbox_x2, f.bbox_y2,
         f.person_name,
         f.detected_at,
+        f.face_cluster_id,
         r.file_path,
         r.camera_name,
         r.recorded_at,
         r.annotated_image_path,
         (f.bbox_x2 - f.bbox_x1) * (f.bbox_y2 - f.bbox_y1) as area,
         (f.bbox_x2 - f.bbox_x1) as width,
-        (f.bbox_y2 - f.bbox_y1) as height
+        (f.bbox_y2 - f.bbox_y1) as height,
+        (SELECT COUNT(*) FROM cam2_detected_faces WHERE face_cluster_id = f.face_cluster_id) as cluster_size
     FROM cam2_detected_faces f
     JOIN cam2_recordings r ON f.recording_id = r.id
-    WHERE f.confidence >= ?
-      AND (f.bbox_x2 - f.bbox_x1) >= ?
+    WHERE (f.bbox_x2 - f.bbox_x1) >= ?
+      AND f.face_cluster_id IS NOT NULL
 ";
 
 if (!$show_all) {
     $sql .= " AND f.person_name = 'Unknown'";
 }
 
-$sql .= " ORDER BY f.detected_at DESC, f.confidence DESC LIMIT ?";
+// Konfidenz-Filter nur für Unknown anwenden (benannte haben oft 0.0 von manueller Benennung)
+$sql .= " AND (f.person_name != 'Unknown' OR f.confidence >= ?)";
+
+$sql .= " ORDER BY r.recorded_at DESC LIMIT ?";
 
 $stmt = $pdo->prepare($sql);
-$stmt->execute([$min_confidence, $min_size, $limit]);
+$stmt->execute([$min_size, $min_confidence, $limit]);
 $persons = $stmt->fetchAll();
 
 // Vorschläge für Autocomplete (Alle bereits vergebenen Namen)
@@ -83,9 +89,9 @@ $named = $pdo->query("
 <body>
     <div class="container">
         <header>
-            <h1>👤 CAM2 Admin - Gesichter zuordnen (5 neueste)</h1>
+            <h1>👤 CAM2 Admin - Gesichter zuordnen (Cluster ≥2)</h1>
             <div style="text-align: center; color: #666; font-size: 0.85em; margin-bottom: 10px;">
-                Version 2.1.0 | Deploy: <?= date('d.m.Y H:i') ?> | Branch: claude/review-item-quality-fl3Zi
+                Version 2.2.0 | Deploy: <?= date('d.m.Y H:i') ?> | Branch: claude/add-mp4-confidence-scores-cjF5E
             </div>
             <div class="stats">
                 <div class="stat-box">
@@ -120,7 +126,11 @@ $named = $pdo->query("
         </div>
 
         <?php if (empty($persons)): ?>
-            <div class="no-results"><h2>Keine unbenannten Gesichter gefunden.</h2></div>
+            <div class="no-results">
+                <h2>Keine Cluster-Gesichter gefunden.</h2>
+                <p>Nur Gesichter mit ≥2 Erkennungen (Cluster) werden angezeigt.</p>
+                <p>→ Führe <code>python3 cam2_cluster_faces.py</code> aus, um Cluster zu erstellen.</p>
+            </div>
         <?php else: ?>
             <div class="quick-rename">
                 <?php foreach ($persons as $person): ?>
@@ -140,7 +150,8 @@ $named = $pdo->query("
                             <p>
                                 <strong>Kamera:</strong> <?= htmlspecialchars($person['camera_name']) ?><br>
                                 <strong>Zeit:</strong> <?= $person['recorded_at'] ?><br>
-                                <strong>Konfidenz:</strong> <?= round($person['confidence']*100, 1) ?>%
+                                <strong>Konfidenz:</strong> <?= round($person['confidence']*100, 1) ?>%<br>
+                                <strong>🔍 Cluster:</strong> <?= $person['cluster_size'] ?> Erkennungen (ID: #<?= $person['face_cluster_id'] ?>)
                             </p>
                             <?php if ($person['person_name'] !== 'Unknown'): ?>
                                 <p style="color:green">✓ Aktuell: <?= htmlspecialchars($person['person_name']) ?></p>

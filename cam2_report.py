@@ -10,6 +10,7 @@ from typing import Dict, List, Any
 import sys
 
 DB_CONFIG = {
+    'host': 'localhost',
     'database': 'wagodb',
     'user': 'gh',
     'password': 'a12345'
@@ -129,6 +130,32 @@ def get_faces_stats(conn) -> Dict[str, Any]:
         WHERE detected_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
     """)
     stats['new_24h'] = cursor.fetchone()['new_faces']
+
+    # Cluster-Statistiken
+    cursor.execute("""
+        SELECT
+            COUNT(DISTINCT face_cluster_id) as total_clusters,
+            SUM(CASE WHEN face_cluster_id IS NOT NULL THEN 1 ELSE 0 END) as clustered_faces,
+            SUM(CASE WHEN face_cluster_id IS NULL THEN 1 ELSE 0 END) as unclustered_faces
+        FROM cam2_detected_faces
+        WHERE face_embedding IS NOT NULL
+    """)
+    stats['clusters'] = cursor.fetchone()
+
+    # Top 10 Cluster nach Größe
+    cursor.execute("""
+        SELECT
+            face_cluster_id,
+            COUNT(*) as size,
+            MIN(detected_at) as first_seen,
+            MAX(detected_at) as last_seen
+        FROM cam2_detected_faces
+        WHERE face_cluster_id IS NOT NULL
+        GROUP BY face_cluster_id
+        ORDER BY size DESC
+        LIMIT 10
+    """)
+    stats['top_clusters'] = cursor.fetchall()
 
     cursor.close()
     return stats
@@ -307,6 +334,32 @@ def print_faces_report(stats: Dict[str, Any]):
         for i, person in enumerate(stats['top_persons'], 1):
             print(f"  {i:2}. {person['person_name']:20} - {person['detections']:4} Erkennungen ({person['avg_confidence']:.2%})")
 
+def print_face_clusters_stats(stats: Dict[str, Any]):
+    """Druckt Face Clustering Statistiken"""
+    print_section("🔍 FACE CLUSTERING (Unknown Faces)")
+
+    clusters = stats.get('clusters', {})
+    # Handle NULL values from database (when no embeddings exist yet)
+    total_clusters = clusters.get('total_clusters') or 0
+    clustered = clusters.get('clustered_faces') or 0
+    unclustered = clusters.get('unclustered_faces') or 0
+
+    if total_clusters > 0 or clustered > 0:
+        print(f"Gesamt Cluster:        {total_clusters:,} verschiedene Personen")
+        print(f"Geclustert:            {clustered:,} Gesichter")
+        print(f"Einzelgänger (Noise):  {unclustered:,} Gesichter")
+
+        top_clusters = stats.get('top_clusters', [])
+        if top_clusters:
+            print(f"\n🏆 Top {len(top_clusters)} Cluster (nach Größe):")
+            for i, cluster in enumerate(top_clusters, 1):
+                print(f"  {i:2}. Cluster #{cluster['face_cluster_id']:3} - "
+                      f"{cluster['size']:4} Gesichter "
+                      f"({cluster['first_seen']} bis {cluster['last_seen']})")
+    else:
+        print("⚠ Noch keine Cluster vorhanden")
+        print("  → Embeddings vorhanden? Führe 'python3 cam2_cluster_faces.py' aus")
+
 def print_objects_report(stats: Dict[str, Any]):
     """Druckt Objekt-Report"""
     print_section("🎯 OBJEKT-ERKENNUNG")
@@ -384,6 +437,9 @@ def main():
         # Gesichter
         faces_stats = get_faces_stats(conn)
         print_faces_report(faces_stats)
+
+        # Face Clustering
+        print_face_clusters_stats(faces_stats)
 
         # Objekte
         objects_stats = get_objects_stats(conn)

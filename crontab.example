@@ -1,0 +1,90 @@
+# ==============================================================================
+# Reolink AI Crontab Configuration
+# ==============================================================================
+#
+# Installation:
+# 1. Bearbeite die Pfade unten (ersetze /home/gh/python mit deinem Pfad)
+# 2. Installiere mit: crontab -e
+# 3. Füge die gewünschten Zeilen ein
+# 4. Speichern und beenden
+#
+# Log-Dateien werden automatisch in logs/ erstellt
+#
+# ==============================================================================
+
+# Minute (0-59)
+# |   Stunde (0-23)
+# |   |   Tag im Monat (1-31)
+# |   |   |   Monat (1-12)
+# |   |   |   |   Wochentag (0-7, 0=Sonntag)
+# |   |   |   |   |   Command
+# |   |   |   |   |   |
+# v   v   v   v   v   v
+
+# ==============================================================================
+# OPTION 1: Komplette Chain (Person Detection + Face Clustering)
+# ==============================================================================
+# Führt beide Schritte nacheinander aus
+# EMPFOHLEN für Produktiv-Betrieb
+#
+# ⚠️  WICHTIG: Lock-Files verhindern parallele Ausführung!
+#    Wenn noch eine Instanz läuft, wird die neue NICHT gestartet.
+#    Das verhindert CUDA Out of Memory Fehler.
+
+# Täglich um 2:00 Uhr nachts (volle Verarbeitung)
+#0 2 * * * /home/gh/python/reolink_AI/run_chain.sh
+
+# Alle 6 Stunden (nur neue Dateien) - EMPFOHLEN
+0 */6 * * * /home/gh/python/reolink_AI/run_chain.sh --limit 1000
+
+# Alle 2 Stunden (kleine Batches)
+#0 */2 * * * /home/gh/python/reolink_AI/run_chain.sh --limit 200
+
+# ⚠️  NICHT empfohlen: Stündlich (kann zu Überlappung führen!)
+#0 * * * * /home/gh/python/reolink_AI/run_chain.sh --limit 100
+
+
+# ==============================================================================
+# OPTION 2: Separate Jobs (für mehr Kontrolle)
+# ==============================================================================
+# Person Detection und Clustering laufen getrennt
+
+# Person Detection: Alle 2 Stunden
+#0 */2 * * * /home/gh/python/reolink_AI/run_person.sh --limit 500
+
+# Face Clustering: 1x täglich um 3:00 Uhr
+#0 3 * * * /home/gh/python/reolink_AI/run_cluster.sh
+
+
+# ==============================================================================
+# OPTION 3: Test-Modus (für Entwicklung)
+# ==============================================================================
+# Nur wenige Dateien verarbeiten, häufiger ausführen
+
+# Alle 15 Minuten, max 10 Dateien
+#*/15 * * * * /home/gh/python/reolink_AI/run_chain.sh --limit 10
+
+# Jede Stunde, nur JPG, max 50 Dateien
+#0 * * * * /home/gh/python/reolink_AI/run_person.sh --jpg-only --limit 50
+
+
+# ==============================================================================
+# Manuelle Ausführung (Terminal)
+# ==============================================================================
+#
+# Komplette Chain:
+#   cd ~/python/reolink_AI && ./run_chain.sh
+#
+# Nur Person Detection (mit Limit):
+#   cd ~/python/reolink_AI && ./run_person.sh --limit 100
+#
+# Nur Face Clustering:
+#   cd ~/python/reolink_AI && ./run_cluster.sh
+#
+# Debug-Modus:
+#   cd ~/python/reolink_AI && ./run_person.sh --debug --limit 10
+#
+# Force Re-Processing:
+#   cd ~/python/reolink_AI && ./run_person.sh --force
+#
+# ==============================================================================

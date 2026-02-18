@@ -18,20 +18,26 @@ try {
 try {
     // Gesamt-Statistiken
     $stats = [];
-    
+
     // Gesichter
     $stats['total_faces'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces")->fetchColumn();
     $stats['unknown_faces'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces WHERE person_name = 'Unknown'")->fetchColumn();
     $stats['named_persons'] = $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam2_detected_faces WHERE person_name != 'Unknown'")->fetchColumn();
-    
+
     // Aufnahmen
     $stats['total_recordings'] = $pdo->query("SELECT COUNT(*) FROM cam2_recordings")->fetchColumn();
     $stats['total_images'] = $pdo->query("SELECT COUNT(*) FROM cam2_recordings WHERE file_type = 'jpg'")->fetchColumn();
     $stats['total_videos'] = $pdo->query("SELECT COUNT(*) FROM cam2_recordings WHERE file_type = 'mp4'")->fetchColumn();
 
-    // Objekte
-    $stats['total_objects'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_objects")->fetchColumn();
-    $stats['total_vehicles'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_objects WHERE object_class IN ('car', 'truck', 'bus', 'motorcycle', 'bicycle')")->fetchColumn();
+    // Objekte (prüfen ob Tabelle existiert)
+    $tableExists = $pdo->query("SHOW TABLES LIKE 'cam2_detected_objects'")->fetch();
+    if ($tableExists) {
+        $stats['total_objects'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_objects")->fetchColumn();
+        $stats['total_vehicles'] = $pdo->query("SELECT COUNT(*) FROM cam2_detected_objects WHERE object_class IN ('car', 'truck', 'bus', 'motorcycle', 'bicycle')")->fetchColumn();
+    } else {
+        $stats['total_objects'] = 0;
+        $stats['total_vehicles'] = 0;
+    }
     
     // Top Personen
     $top_persons = $pdo->query("
@@ -45,14 +51,18 @@ try {
     $stats['top_persons'] = $top_persons;
     
     // Top Objekte
-    $top_objects = $pdo->query("
-        SELECT object_class, COUNT(*) as count
-        FROM cam2_detected_objects
-        GROUP BY object_class
-        ORDER BY count DESC
-        LIMIT 10
-    ")->fetchAll();
-    $stats['top_objects'] = $top_objects;
+    if ($tableExists) {
+        $top_objects = $pdo->query("
+            SELECT object_class, COUNT(*) as count
+            FROM cam2_detected_objects
+            GROUP BY object_class
+            ORDER BY count DESC
+            LIMIT 10
+        ")->fetchAll();
+        $stats['top_objects'] = $top_objects;
+    } else {
+        $stats['top_objects'] = [];
+    }
     
     // Aktivität pro Kamera
     $camera_activity = $pdo->query("

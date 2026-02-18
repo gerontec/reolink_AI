@@ -6,8 +6,8 @@ Gesichtserkennung, Objekt-Detektion, Szenen-Erkennung
 """
 
 # Version & Build Info
-VERSION = "1.3.0"
-BUILD_DATE = "2026-02-17"
+VERSION = "1.4.0"
+BUILD_TIMESTAMP = "2026-02-17 22:30:00"
 SCRIPT_NAME = "Reolink AI Video Processor"
 
 import os
@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 def check_gpu_availability():
     """Überprüft GPU-Verfügbarkeit und zeigt Details"""
     logger.info("=" * 70)
-    logger.info(f"{SCRIPT_NAME} v{VERSION} (Build: {BUILD_DATE})")
+    logger.info(f"{SCRIPT_NAME} v{VERSION} (Build: {BUILD_TIMESTAMP})")
     logger.info("=" * 70)
     logger.info("GPU STATUS CHECK")
     logger.info("=" * 70)
@@ -467,8 +467,8 @@ class AIAnalyzer:
         if not self.face_app:
             return faces
 
-        if not self.known_face_encodings:
-            return faces
+        # WICHTIG: Auch Unknown-Gesichter erkennen und speichern!
+        # (Zeilen 470-471 wurden entfernt - Bug-Fix)
 
         try:
             # Face Detection + Embedding mit InsightFace (GPU-beschleunigt!)
@@ -486,9 +486,12 @@ class AIAnalyzer:
                 bbox = face.bbox.astype(int)
                 x1, y1, x2, y2 = bbox
 
+                # InsightFace Detection-Konfidenz (ist das ein Gesicht?)
+                det_score = float(getattr(face, 'det_score', 0.0))
+
                 # Gesicht mit bekannten vergleichen (Cosine Similarity)
                 name = "Unknown"
-                confidence = 0.0
+                confidence = det_score  # Fallback: Erkennungs-Score für Unknown-Gesichter
 
                 if len(self.known_face_encodings) > 0:
                     # Cosine Similarity berechnen (InsightFace embeddings sind normalized)
@@ -505,7 +508,7 @@ class AIAnalyzer:
                     # Threshold für Match (cosine similarity: 0.4-0.6 ist gut)
                     if best_similarity > 0.5:
                         name = self.known_face_names[best_match_index]
-                        confidence = float(best_similarity)
+                        confidence = float(best_similarity)  # Recognition-Score überschreibt det_score
 
                 faces.append({
                     'name': name,
@@ -515,10 +518,11 @@ class AIAnalyzer:
                         'y1': int(y1),
                         'x2': int(x2),
                         'y2': int(y2)
-                    }
+                    },
+                    'embedding': face_embedding  # 512-dim numpy array for clustering
                 })
 
-                logger.debug(f"Gesicht erkannt: {name} (Konfidenz: {confidence:.2f})")
+                logger.debug(f"Gesicht erkannt: {name} (det={det_score:.2f}, conf={confidence:.2f})")
 
         except Exception as e:
             logger.error(f"Fehler bei Gesichtserkennung: {e}")
@@ -639,11 +643,12 @@ class AIAnalyzer:
                 # Calculate frame score (faces + persons have higher priority)
                 frame_score = len(frame_results['faces']) * 10 + frame_results['persons'] * 5 + len(frame_results['objects'])
 
-                # Track best frame (for complete object data with confidence)
+                # Track best frame (for complete object data with confidence AND face embeddings)
                 if frame_score > best_frame_score:
                     best_frame_score = frame_score
-                    # Store COMPLETE detections (with confidence and bbox) from best frame
+                    # Store COMPLETE detections (with confidence, bbox, and embeddings!) from best frame
                     best_frame_results = {
+                        'faces': frame_results['faces'].copy(),  # Include faces with embeddings!
                         'objects': frame_results['objects'].copy(),
                         'vehicles': frame_results['vehicles'].copy(),
                         'persons': frame_results['persons']
@@ -676,24 +681,25 @@ class AIAnalyzer:
             cap.release()
 
             results['analyzed_frames'] = analyzed_count
-            results['faces'] = [{'name': name} for name in unique_faces]
 
-            # Use detections from BEST frame (with confidence and bbox data!)
+            # Use detections from BEST frame (with confidence, bbox, and embeddings!)
             if best_frame_results:
+                results['faces'] = best_frame_results['faces']  # Complete face data with embeddings!
                 results['objects'] = best_frame_results['objects']
                 results['vehicles'] = best_frame_results['vehicles']
                 results['best_frame'] = best_frame_image  # Include the actual frame image
                 results['best_frame_number'] = best_frame_number  # Include frame number
-                logger.debug(f"Using {len(best_frame_results['objects'])} objects from best frame #{best_frame_number}")
+                logger.debug(f"Using best frame #{best_frame_number}: {len(best_frame_results['faces'])} faces, {len(best_frame_results['objects'])} objects")
             else:
                 # Fallback: No best frame found (empty video)
-                # Return empty lists to avoid storing objects without confidence
+                # Return empty lists to avoid storing data without confidence/embeddings
+                results['faces'] = []
                 results['objects'] = []
                 results['vehicles'] = []
                 results['best_frame'] = None
                 results['best_frame_number'] = 0
-                if unique_objects or unique_vehicles:
-                    logger.warning(f"Video {video_path}: Objects detected ({unique_objects}) but no best frame found - data incomplete")
+                if unique_faces or unique_objects or unique_vehicles:
+                    logger.warning(f"Video {video_path}: Detections found but no best frame - data incomplete")
 
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
                        f"{len(unique_faces)} Gesichter, {results['max_persons']} max. Personen, "
@@ -737,11 +743,12 @@ class AIAnalyzer:
 class FileProcessor:
     """Verarbeitet Mediendateien mit AI-Analyse und Datenbank-Integration"""
 
-    def __init__(self, base_path: str, db_config: dict, ai_analyzer: AIAnalyzer, annotated_output_path: str = None):
+    def __init__(self, base_path: str, db_config: dict, ai_analyzer: AIAnalyzer, annotated_output_path: str = None, force: bool = False):
         self.base_path = Path(base_path)
         self.db_config = db_config
         self.db_connection = None
         self.ai_analyzer = ai_analyzer
+        self.force = force  # Re-analyze even if already in DB
 
         # Image Annotator für annotierte Bilder
         if annotated_output_path:
@@ -863,10 +870,10 @@ class FileProcessor:
         return None
     
     def file_exists_in_db(self, filepath: str) -> bool:
-        """Prüft ob Datei bereits in DB existiert"""
+        """Prüft ob Datei bereits in DB existiert UND analysiert wurde"""
         try:
             cursor = self.db_connection.cursor()
-            query = "SELECT COUNT(*) FROM cam2_recordings WHERE file_path = %s"
+            query = "SELECT COUNT(*) FROM cam2_recordings WHERE file_path = %s AND analyzed = 1"
             cursor.execute(query, (filepath,))
             count = cursor.fetchone()[0]
             cursor.close()
@@ -884,18 +891,31 @@ class FileProcessor:
             
             # Relativer Pfad zur Basis
             rel_path = str(filepath.relative_to(self.base_path))
-            
+
             # Dateigröße ermitteln
             file_size = filepath.stat().st_size
-            
-            # Haupt-Recording eintragen
+
+            # Prüfen ob Datei bereits existiert und alte Analyse-Daten löschen
+            cursor.execute("SELECT id FROM cam2_recordings WHERE file_path = %s", (rel_path,))
+            existing_row = cursor.fetchone()
+            if existing_row:
+                existing_id = existing_row[0]
+                # Alte AI-Analyse Ergebnisse löschen
+                cursor.execute("DELETE FROM cam2_detected_faces WHERE recording_id = %s", (existing_id,))
+                cursor.execute("DELETE FROM cam2_detected_objects WHERE recording_id = %s", (existing_id,))
+                cursor.execute("DELETE FROM cam2_analysis_summary WHERE recording_id = %s", (existing_id,))
+
+            # Haupt-Recording eintragen (oder updaten wenn bereits vorhanden)
             query = """
                 INSERT INTO cam2_recordings
                 (camera_name, file_path, file_type, file_size, recorded_at,
                  analyzed, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON DUPLICATE KEY UPDATE
+                    file_size = VALUES(file_size),
+                    analyzed = VALUES(analyzed)
             """
-            
+
             values = (
                 camera_name,
                 rel_path,
@@ -904,9 +924,14 @@ class FileProcessor:
                 timestamp,
                 analysis_results is not None
             )
-            
+
             cursor.execute(query, values)
             recording_id = cursor.lastrowid
+
+            # Wenn UPDATE (nicht INSERT), recording_id holen
+            if recording_id == 0:
+                cursor.execute("SELECT id FROM cam2_recordings WHERE file_path = %s", (rel_path,))
+                recording_id = cursor.fetchone()[0]
             
             # AI-Analyse Ergebnisse eintragen
             if analysis_results:
@@ -930,10 +955,15 @@ class FileProcessor:
             for face in results.get('faces', []):
                 query = """
                     INSERT INTO cam2_detected_faces
-                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, face_embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = face.get('bbox', {})
+
+                # Embedding serialisieren (numpy array -> bytes)
+                embedding = face.get('embedding')
+                embedding_bytes = embedding.tobytes() if embedding is not None else None
+
                 values = (
                     recording_id,
                     face.get('name', 'Unknown'),
@@ -941,7 +971,8 @@ class FileProcessor:
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
-                    bbox.get('y2', 0)
+                    bbox.get('y2', 0),
+                    embedding_bytes
                 )
                 cursor.execute(query, values)
             
@@ -989,16 +1020,22 @@ class FileProcessor:
             logger.error(f"Fehler beim Eintragen der Analyse-Ergebnisse: {e}")
             raise
     
-    def find_all_media_files(self) -> List[Path]:
+    def find_all_media_files(self, jpg_only: bool = False) -> List[Path]:
         """Findet alle Mediendateien rekursiv"""
         media_files = []
-        
-        for ext in ['*.mp4', '*.jpg']:
-            media_files.extend(self.base_path.rglob(ext))
-        
+
+        if jpg_only:
+            # Nur JPG-Dateien (schneller: ~0.1s pro Datei)
+            media_files.extend(self.base_path.rglob('*.jpg'))
+            logger.info("JPG-only Modus aktiviert")
+        else:
+            # Alle Mediendateien (JPG + MP4)
+            for ext in ['*.mp4', '*.jpg']:
+                media_files.extend(self.base_path.rglob(ext))
+
         # Nach Datum sortieren (älteste zuerst)
         media_files.sort(key=lambda p: p.stat().st_mtime)
-        
+
         logger.info(f"Gefunden: {len(media_files)} Mediendateien")
         return media_files
     
@@ -1023,9 +1060,9 @@ class FileProcessor:
         camera_name, file_type, timestamp = parsed
         logger.debug(f"✓ Geparst: {filename} → Camera: {camera_name}, Type: {file_type}, Time: {timestamp}")
 
-        # Prüfen ob bereits in DB
+        # Prüfen ob bereits in DB (skip unless --force)
         rel_path = str(filepath.relative_to(self.base_path))
-        if self.file_exists_in_db(rel_path):
+        if not self.force and self.file_exists_in_db(rel_path):
             logger.debug(f"⊘ Bereits in DB: {filename}")
             self.skipped_count += 1
             return False
@@ -1104,27 +1141,27 @@ class FileProcessor:
             self.error_count += 1
             return False
     
-    def process_all_files(self, limit: Optional[int] = None, analyze: bool = True):
+    def process_all_files(self, limit: Optional[int] = None, analyze: bool = True, jpg_only: bool = False):
         """Verarbeitet alle gefundenen Dateien"""
         if not self.connect_db():
             logger.error("Abbruch: Keine Datenbankverbindung")
             return
-        
+
         logger.info("=" * 70)
         logger.info(f"Starte Dateiverarbeitung mit AI-Analyse")
-        logger.info(f"Version: {VERSION} | Build: {BUILD_DATE}")
+        logger.info(f"Version: {VERSION} | Build: {BUILD_TIMESTAMP}")
         logger.info(f"AI-Device: {self.ai_analyzer.device}")
         logger.info(f"Bekannte Gesichter: {len(self.ai_analyzer.known_face_names)}")
-        
+
         # GPU Stats anzeigen
         gpu_stats = self.ai_analyzer.get_gpu_stats()
         if gpu_stats['available']:
             logger.info(f"GPU: {gpu_stats['name']}")
             logger.info(f"GPU Memory: {gpu_stats['memory_allocated_mb']:.2f} MB / {gpu_stats['memory_total_gb']:.2f} GB")
-        
+
         logger.info("=" * 70)
-        
-        media_files = self.find_all_media_files()
+
+        media_files = self.find_all_media_files(jpg_only=jpg_only)
         
         if limit:
             media_files = media_files[:limit]
@@ -1201,10 +1238,13 @@ def create_database_schema():
         bbox_y1 INT,
         bbox_x2 INT,
         bbox_y2 INT,
+        face_embedding BLOB,
+        face_cluster_id INT,
         detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (recording_id) REFERENCES cam2_recordings(id) ON DELETE CASCADE,
         INDEX idx_person (person_name),
-        INDEX idx_recording (recording_id)
+        INDEX idx_recording (recording_id),
+        INDEX idx_cluster (face_cluster_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
     CREATE TABLE IF NOT EXISTS cam2_detected_objects (
@@ -1303,7 +1343,17 @@ def main():
         default=KNOWN_FACES_DIR,
         help=f'Verzeichnis mit bekannten Gesichtern (default: {KNOWN_FACES_DIR})'
     )
-    
+    parser.add_argument(
+        '--jpg-only',
+        action='store_true',
+        help='Nur JPG-Dateien verarbeiten (schneller, ~0.1s pro Datei)'
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Neu analysieren, auch wenn bereits in DB (speichert neue Embeddings)'
+    )
+
     args = parser.parse_args()
     
     if args.debug:
@@ -1331,10 +1381,11 @@ def main():
     )
     
     # Verarbeitung starten
-    processor = FileProcessor(args.base_path, DB_CONFIG, ai_analyzer, ANNOTATED_OUTPUT_PATH)
+    processor = FileProcessor(args.base_path, DB_CONFIG, ai_analyzer, ANNOTATED_OUTPUT_PATH, force=args.force)
     processor.process_all_files(
         limit=args.limit,
-        analyze=not args.no_analysis
+        analyze=not args.no_analysis,
+        jpg_only=args.jpg_only
     )
 
 

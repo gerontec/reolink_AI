@@ -1,0 +1,42 @@
+#!/bin/bash
+################################################################################
+# CAM2 Report Wrapper Script
+# Führt cam2_report.py aus
+################################################################################
+
+# Python Virtual Environment
+VENV_BIN="/home/gh/python/venv_py311/bin/python3"
+
+# Script Directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPORT_SCRIPT="${SCRIPT_DIR}/cam2_report.py"
+
+# Log-Datei (wird überschrieben)
+LOG_DIR="${SCRIPT_DIR}/logs"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/report.log"
+
+# Alte Log als Backup behalten
+if [ -f "${LOG_FILE}" ]; then
+    mv "${LOG_FILE}" "${LOG_FILE}.old"
+fi
+
+echo "==============================================================================" | tee -a "${LOG_FILE}"
+echo "CAM2 Report gestartet: $(date)" | tee -a "${LOG_FILE}"
+echo "==============================================================================" | tee -a "${LOG_FILE}"
+echo "Python: ${VENV_BIN}" | tee -a "${LOG_FILE}"
+echo "Script: ${REPORT_SCRIPT}" | tee -a "${LOG_FILE}"
+echo "Log: ${LOG_FILE}" | tee -a "${LOG_FILE}"
+echo "" | tee -a "${LOG_FILE}"
+
+# Report ausführen
+"${VENV_BIN}" "${REPORT_SCRIPT}" "$@" 2>&1 | tee -a "${LOG_FILE}"
+
+EXIT_CODE=$?
+
+echo "" | tee -a "${LOG_FILE}"
+echo "==============================================================================" | tee -a "${LOG_FILE}"
+echo "CAM2 Report beendet: $(date) (Exit Code: ${EXIT_CODE})" | tee -a "${LOG_FILE}"
+echo "==============================================================================" | tee -a "${LOG_FILE}"
+
+exit ${EXIT_CODE}
