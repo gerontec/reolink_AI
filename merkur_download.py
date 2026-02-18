@@ -26,6 +26,12 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
+try:
+    import fitz  # pymupdf
+    _FITZ_OK = True
+except ImportError:
+    _FITZ_OK = False
+
 # ── Konfiguration ──────────────────────────────────────────────────────────────
 USER         = 'gh@heissa.de'
 PASSWD       = '2026Einfach!'
@@ -86,6 +92,25 @@ def find_issue_id_in_json(data, depth=0) -> str | None:
             if r:
                 return r
     return None
+
+
+def extract_text(pdf_path: Path) -> None:
+    """Extrahiert Text aus PDF → .txt (gleicher Name, Silbentrennung aufgelöst)."""
+    txt_path = pdf_path.with_suffix('.txt')
+    if txt_path.exists():
+        return
+    if not _FITZ_OK:
+        logger.warning('pymupdf nicht installiert – kein .txt erstellt')
+        return
+    try:
+        doc = fitz.open(pdf_path)
+        text = '\n'.join(page.get_text() for page in doc)
+        # Silbentrennung auflösen: "Hausdurchsu-\nchung" → "Hausdurchsuchung"
+        text = re.sub(r'-\n([a-zäöüß])', r'\1', text)
+        txt_path.write_text(text, encoding='utf-8')
+        logger.info(f'✓ Text-Index: {txt_path.name} ({len(text):,} Zeichen)')
+    except Exception as e:
+        logger.warning(f'Text-Extraktion fehlgeschlagen: {e}')
 
 
 def _make_browser_context(pw):
@@ -332,6 +357,7 @@ def backfill():
                 browser.close()
                 sys.exit(1)
 
+            extract_text(output)
             day -= timedelta(days=1)
 
 
@@ -371,6 +397,8 @@ def main():
     if not run(date_str, output):
         output.unlink(missing_ok=True)
         sys.exit(1)
+
+    extract_text(output)
 
 
 if __name__ == '__main__':
