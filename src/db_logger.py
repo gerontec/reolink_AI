@@ -7,7 +7,7 @@ import hashlib
 import os
 import json
 
-DB_HOST = "192.168.178.218"
+DB_HOST = "localhost"
 DB_USER = "gh"
 DB_PASS = "a12345"
 DB_NAME = "wagodb"

@@ -6,6 +6,11 @@
 # 3. Statistics Report (cam2_report.py)
 ################################################################################
 
+# CUDA 11.8 für Tesla P4 (sm_61)
+export LD_LIBRARY_PATH=/usr/local/cuda-11.8/targets/x86_64-linux/lib:${LD_LIBRARY_PATH:-}
+export CUDA_MODULE_LOADING=LAZY
+export CUDA_VISIBLE_DEVICES=0
+
 # Script Directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
