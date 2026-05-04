@@ -401,7 +401,7 @@ class AIAnalyzer:
 
                 if faces and len(faces) > 0:
                     # Erstes Gesicht verwenden (sollte nur eins sein)
-                    self.known_face_encodings.append(faces[0].embedding)
+                    emb = faces[0].embedding; norm = np.linalg.norm(emb); self.known_face_encodings.append(emb / norm if norm > 0 else emb)
                     # Name ist Dateiname ohne Extension
                     name = image_path.stem.replace('_', ' ')
                     self.known_face_names.append(name)
@@ -494,11 +494,12 @@ class AIAnalyzer:
                 confidence = det_score  # Fallback: Erkennungs-Score für Unknown-Gesichter
 
                 if len(self.known_face_encodings) > 0:
-                    # Cosine Similarity berechnen (InsightFace embeddings sind normalized)
+                    # Cosine Similarity (explizit normalisieren — buffalo_l liefert nicht immer unit-vektoren)
                     similarities = []
                     for known_encoding in self.known_face_encodings:
                         # Cosine similarity = dot product (wenn normalized)
-                        similarity = np.dot(face_embedding, known_encoding)
+                        fe = face_embedding; fn = np.linalg.norm(fe); fe_n = fe / fn if fn > 0 else fe
+                        similarity = float(np.dot(fe_n, known_encoding))
                         similarities.append(similarity)
 
                     # Bester Match
