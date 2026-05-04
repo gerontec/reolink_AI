@@ -334,11 +334,11 @@ class AIAnalyzer:
 
             # ctx_id = 0 für GPU 0, -1 für CPU
             ctx_id = self.gpu_id if self.device == 'cuda' else -1
-            self.face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+            self.face_app.prepare(ctx_id=ctx_id, det_size=(640, 640), det_thresh=0.3)
 
             logger.info(f"✓ InsightFace Model geladen - Device: {self.device}")
             logger.info(f"  Model: buffalo_s (RetinaFace + ArcFace)")
-            logger.info(f"  Detection Size: 640x640")
+            logger.info(f"  Detection Size: 640x640, det_thresh=0.3")
 
         except Exception as e:
             logger.error(f"InsightFace Model konnte nicht geladen werden: {e}")
@@ -623,6 +623,7 @@ class AIAnalyzer:
             best_frame_results = None  # Store complete detections from best frame
             best_frame_image = None  # Store the actual frame image
             best_frame_number = 0  # Store frame number
+            frame_detections = {}  # frame_number → detections (für annotiertes Video)
 
             while True:
                 ret, frame = cap.read()
@@ -640,8 +641,19 @@ class AIAnalyzer:
                 # Frame analysieren
                 frame_results = self.analyze_image_array(frame)
 
-                # Calculate frame score (faces + persons have higher priority)
-                frame_score = len(frame_results['faces']) * 10 + frame_results['persons'] * 5 + len(frame_results['objects'])
+                # Pro-Frame Detektionen speichern (für annotiertes Video)
+                if frame_results['faces'] or frame_results['persons'] > 0:
+                    frame_detections[frame_count] = {
+                        'faces': frame_results['faces'].copy(),
+                        'objects': frame_results['objects'].copy(),
+                        'vehicles': frame_results['vehicles'].copy(),
+                    }
+
+                # Frames mit Gesicht haben immer Priorität über Frames ohne Gesicht.
+                # Unter Frames mit Gesicht gewinnt die höchste det_score-Summe.
+                face_quality = sum(f.get('det_score', 0.5) for f in frame_results['faces'])
+                face_bonus = 1000 if face_quality > 0 else 0
+                frame_score = face_bonus + face_quality * 10 + frame_results['persons'] * 5 + len(frame_results['objects'])
 
                 # Track best frame (for complete object data with confidence AND face embeddings)
                 if frame_score > best_frame_score:
@@ -689,6 +701,7 @@ class AIAnalyzer:
                 results['vehicles'] = best_frame_results['vehicles']
                 results['best_frame'] = best_frame_image  # Include the actual frame image
                 results['best_frame_number'] = best_frame_number  # Include frame number
+                results['frame_detections'] = frame_detections
                 logger.debug(f"Using best frame #{best_frame_number}: {len(best_frame_results['faces'])} faces, {len(best_frame_results['objects'])} objects")
             else:
                 # Fallback: No best frame found (empty video)
@@ -701,9 +714,10 @@ class AIAnalyzer:
                 if unique_faces or unique_objects or unique_vehicles:
                     logger.warning(f"Video {video_path}: Detections found but no best frame - data incomplete")
 
+            total_detected_faces = len(results.get('faces', []))
             logger.info(f"Video analysiert: {analyzed_count}/{total_frames} Frames, "
-                       f"{len(unique_faces)} Gesichter, {results['max_persons']} max. Personen, "
-                       f"Bester Frame: #{best_frame_number}")
+                       f"{total_detected_faces} Gesichter erkannt ({len(unique_faces)} benannt), "
+                       f"{results['max_persons']} max. Personen, Bester Frame: #{best_frame_number}")
 
             # Debug: Log object confidence scores
             for i, obj in enumerate(results.get('objects', [])):
@@ -788,8 +802,12 @@ class FileProcessor:
         try:
             cursor = self.db_connection.cursor()
 
-            # Relativen Pfad berechnen (relativ zu MEDIA_BASE_PATH)
-            rel_path = str(annotated_path.relative_to(self.base_path))
+            # Relativen Pfad berechnen (relativ zu /var/www/web1)
+            web_root = Path(MEDIA_BASE_PATH)
+            try:
+                rel_path = str(annotated_path.relative_to(web_root))
+            except ValueError:
+                rel_path = str(annotated_path.relative_to(self.base_path))
 
             query = """
                 UPDATE cam2_recordings
@@ -804,6 +822,94 @@ class FileProcessor:
 
         except Exception as e:
             logger.error(f"Fehler beim Update des annotierten Bildpfads: {e}")
+
+    def _save_best_frame_jpg(self, frame: np.ndarray, analysis_results: dict,
+                             save_name: str) -> Optional[Path]:
+        """Speichert den besten Frame mit Bboxes als JPG."""
+        try:
+            img = frame.copy()
+            for obj in analysis_results.get('vehicles', []):
+                self.annotator._draw_bbox(img, obj, ImageAnnotator.COLOR_VEHICLE, obj['class'])
+            for obj in analysis_results.get('objects', []):
+                if obj['class'] == 'person':
+                    self.annotator._draw_bbox(img, obj, ImageAnnotator.COLOR_PERSON, 'Person')
+            for face in analysis_results.get('faces', []):
+                color = ImageAnnotator.COLOR_KNOWN_FACE if face['name'] != 'Unknown' else ImageAnnotator.COLOR_UNKNOWN_FACE
+                self.annotator._draw_face_bbox(img, face, color)
+            out_path = self.annotator.output_dir / save_name
+            cv2.imwrite(str(out_path), img)
+            os.chmod(str(out_path), 0o664)
+            return out_path
+        except Exception as e:
+            logger.error(f"Fehler beim Speichern des Best-Frame JPG: {e}")
+            return None
+
+    def _create_annotated_video(self, video_path: Path, frame_detections: dict,
+                                save_name: str) -> Optional[Path]:
+        """Erstellt annotiertes MP4 mit Bounding Boxes pro Frame."""
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            fps = cap.get(cv2.CAP_PROP_FPS) or 10.0
+            w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            out_path = self.annotator.output_dir / save_name
+            writer   = cv2.VideoWriter(str(out_path),
+                                       cv2.VideoWriter_fourcc(*'mp4v'),
+                                       fps, (w, h))
+            if not writer.isOpened():
+                logger.error("VideoWriter konnte nicht geöffnet werden")
+                cap.release()
+                return None
+
+            frame_count = 0
+            current_dets = {'faces': [], 'objects': [], 'vehicles': []}
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_count += 1
+                if frame_count in frame_detections:
+                    current_dets = frame_detections[frame_count]
+
+                for obj in current_dets.get('vehicles', []):
+                    self.annotator._draw_bbox(frame, obj, ImageAnnotator.COLOR_VEHICLE, obj['class'])
+                for obj in current_dets.get('objects', []):
+                    if obj['class'] == 'person':
+                        self.annotator._draw_bbox(frame, obj, ImageAnnotator.COLOR_PERSON, 'Person')
+                for face in current_dets.get('faces', []):
+                    color = ImageAnnotator.COLOR_KNOWN_FACE if face['name'] != 'Unknown' else ImageAnnotator.COLOR_UNKNOWN_FACE
+                    self.annotator._draw_face_bbox(frame, face, color)
+
+                writer.write(frame)
+
+            cap.release()
+            writer.release()
+
+            if not (out_path.exists() and out_path.stat().st_size > 0):
+                return None
+
+            # Re-encode MPEG-4 → H.264 für Browser-Kompatibilität
+            h264_path = out_path.with_suffix('.h264.mp4')
+            import subprocess as _sp
+            ret = _sp.run([
+                'ffmpeg', '-hide_banner', '-loglevel', 'warning',
+                '-i', str(out_path),
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-movflags', '+faststart',
+                '-y', str(h264_path)
+            ], timeout=120)
+            if ret.returncode == 0 and h264_path.exists():
+                out_path.unlink()
+                h264_path.rename(out_path)
+
+            os.chmod(str(out_path), 0o664)
+            logger.info(f"✓ Annotiertes Video: {save_name} ({out_path.stat().st_size/1024/1024:.1f} MB)")
+            return out_path
+        except Exception as e:
+            logger.error(f"Fehler beim Erstellen des annotierten Videos: {e}")
+            return None
 
     def parse_filename(self, filename: str) -> Optional[Tuple[str, str, datetime]]:
         """
@@ -1078,7 +1184,7 @@ class FileProcessor:
                     analysis_results = self.ai_analyzer.analyze_image(filepath)
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
-                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=30)
+                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=10)
                 
                 analysis_time = time.time() - analysis_start
                 self.total_analysis_time += analysis_time
@@ -1108,28 +1214,25 @@ class FileProcessor:
                         logger.info(f"  ✓ Annotiertes Bild erstellt")
 
                 elif file_type == 'mp4' and analysis_results.get('best_frame') is not None:
-                    # Best Frame aus Video annotieren
-                    best_frame = analysis_results['best_frame']
+                    best_frame     = analysis_results['best_frame']
                     best_frame_num = analysis_results.get('best_frame_number', 0)
+                    stem           = filename.replace('.mp4', '')
 
-                    # Temporäre Datei für den Frame erstellen
-                    temp_frame_path = Path(f"/tmp/frame_{recording_id}.jpg")
-                    cv2.imwrite(str(temp_frame_path), best_frame)
-
-                    # Frame annotieren mit speziellem Prefix
-                    annotated_path = self.annotator.annotate_image(
-                        temp_frame_path, analysis_results,
-                        save_prefix=f"video_{filename.replace('.mp4', '')}"
+                    # Best-Frame als JPG mit Bboxes → annotated_image_path
+                    best_jpg = self._save_best_frame_jpg(
+                        best_frame, analysis_results, save_name=f"best_{stem}.jpg"
                     )
-
-                    if annotated_path:
+                    if best_jpg:
                         self.annotated_count += 1
-                        self.update_annotated_image_path(recording_id, annotated_path)
-                        logger.info(f"  ✓ Annotiertes Bild aus Frame #{best_frame_num} erstellt")
+                        self.update_annotated_image_path(recording_id, best_jpg)
+                        logger.info(f"  ✓ Best-Frame JPG erstellt (Frame #{best_frame_num})")
 
-                    # Temporäre Datei löschen
-                    if temp_frame_path.exists():
-                        temp_frame_path.unlink()
+                    # Annotiertes Video (alle Frames mit Bboxes) — nicht in DB
+                    self._create_annotated_video(
+                        filepath,
+                        analysis_results.get('frame_detections', {}),
+                        save_name=f"video_{stem}.mp4"
+                    )
 
             except Exception as e:
                 logger.error(f"Fehler beim Erstellen des annotierten Bildes: {e}")
@@ -1162,14 +1265,13 @@ class FileProcessor:
         logger.info("=" * 70)
 
         media_files = self.find_all_media_files(jpg_only=jpg_only)
-        
+
         if limit:
-            media_files = media_files[:limit]
-            logger.info(f"Limitierung aktiv: Verarbeite nur erste {limit} Dateien")
-        
+            logger.info(f"Limitierung aktiv: Verarbeite maximal {limit} neue Dateien")
+
         start_time = time.time()
         last_gpu_check = time.time()
-        
+
         for idx, filepath in enumerate(media_files, 1):
             # Fortschritt alle 50 Dateien
             if idx % 50 == 0:
@@ -1177,13 +1279,18 @@ class FileProcessor:
                 rate = idx / elapsed if elapsed > 0 else 0
                 logger.info(f"Fortschritt: {idx}/{len(media_files)} Dateien "
                           f"({rate:.2f} Dateien/Sek)")
-                
+
                 # GPU Stats alle 50 Dateien
                 if gpu_stats['available']:
                     gpu_stats = self.ai_analyzer.get_gpu_stats()
                     logger.info(f"GPU Memory: {gpu_stats['memory_allocated_mb']:.2f} MB")
-            
+
             self.process_file(filepath, analyze=analyze)
+
+            # Limit gilt nur für neu verarbeitete Dateien (nicht bereits in DB)
+            if limit and self.processed_count >= limit:
+                logger.info(f"Limit erreicht: {limit} neue Dateien verarbeitet")
+                break
         
         elapsed = time.time() - start_time
         

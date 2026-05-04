@@ -64,7 +64,7 @@ fi
 # --jpg-only: Nur JPG-Dateien (schneller, ~0.1s pro Datei)
 # --debug: Debug-Logging
 # --limit: Maximale Anzahl Dateien (z.B. --limit 100)
-DEFAULT_OPTS="--jpg-only --debug"
+DEFAULT_OPTS="--debug"
 
 echo "==============================================================================" | tee -a "${LOG_FILE}"
 echo "Person Detection gestartet: $(date)" | tee -a "${LOG_FILE}"

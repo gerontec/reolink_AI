@@ -1,146 +1,130 @@
-# Reolink AI Watchdog System
+# Reolink AI — Überwachungssystem
 
-Advanced AI-powered surveillance system for Reolink cameras with object detection, face recognition, and intelligent recording.
+KI-gestütztes Überwachungssystem für Reolink-Kameras mit Personenerkennung,
+Gesichtserkennung und automatischer Clip-Aufnahme.
 
-## Features
+## Kameras
 
-- 🎯 **YOLO Object Detection** - Person, car, truck, motorcycle, bus detection
-- 👤 **Face Recognition** - Automatic clustering and recognition with GPU acceleration
-- 🌙 **Auto IR Detection** - Automatically adjusts for day/night modes
-- 📹 **Smart Recording** - Pre/post-recording with configurable triggers
-- 📊 **Live Dashboard** - Web-based monitoring with statistics
-- 🗄️ **Database Logging** - Complete tracking of all detections
-- 🅿️ **Parking Detection** - Identifies parked vehicles
-- 🎨 **Video Overlays** - Detection lines and bounding boxes
+| Kamera | Typ | Anbindung | Auflösung |
+|--------|-----|-----------|-----------|
+| Cam1 | Reolink (FTP) | FTP → `/var/www/web1/` | 2560×1440 JPG |
+| Cam2 | Reolink E1 (192.168.178.128) | RTSP-Stream | 1920×1080 MP4 |
 
-## Requirements
+## Architektur
 
-- Python 3.11+
-- CUDA-capable GPU (for face recognition)
-- MariaDB/MySQL database
-- Reolink camera with RTSP support
-- Ubuntu 24.04 (recommended)
+```
+Cam1 (FTP)                         Cam2 (RTSP)
+    │                                   │
+    ▼                                   ▼
+/var/www/web1/YYYY/MM/          cam2_stream.py (systemd)
+Camera1_00_*.jpg                    │
+    │                        Sub-Stream 640×360
+    │                        YOLO @ jeden 3. Frame
+    │                        Person erkannt?
+    │                               │ JA (Cooldown 90s)
+    │                               ▼
+    │                    ffmpeg → Main-Stream 1920×1080
+    │                    Camera2_00_TIMESTAMP.mp4 (25s)
+    │                    /var/www/web2/YYYY/MM/
+    │                               │
+    └───────────────────────────────┘
+                    │
+                    ▼
+            run_chain.sh
+        ┌───────────────────┐
+        │ 1. person.py      │  YOLO + InsightFace (GPU)
+        │    sample_rate=10 │  det_thresh=0.3
+        │    → annotiertes  │  → H.264 MP4 mit Bboxes
+        │      Video (MP4)  │
+        ├───────────────────┤
+        │ 2. clustering.py  │  DBSCAN eps=0.4
+        │    → Cluster      │
+        ├───────────────────┤
+        │ 3. report.py      │  Statistik
+        └───────────────────┘
+                    │
+                    ▼
+            MariaDB wagodb
+        cam2_recordings
+        cam2_detected_faces
+        cam2_detected_objects
 
-## Installation
+                    │
+                    ▼
+        http://192.168.5.23/
+        Gesichter benennen, Cluster anzeigen,
+        Video-Player mit Bounding Boxes
+```
+
+## Services & Cron
+
+| Prozess | Typ | Intervall |
+|---------|-----|-----------|
+| `cam2-stream.service` | systemd (dauerhaft) | — |
+| `run_mail_processor.sh` | cron | alle 5 Min (Email-Fallback) |
+
+## Verzeichnisse
+
+| Pfad | Inhalt |
+|------|--------|
+| `/var/www/web1/` | Cam1 FTP-Uploads (JPG) |
+| `/var/www/web1/annotated/` | Annotierte Videos/Bilder (H.264 MP4 / JPG) |
+| `/var/www/web2/YYYY/MM/` | Cam2 RTSP-Clips (MP4, Camera2_00_*) |
+| `/home/gh/python/mail_processed/` | Archivierte Emails |
+| `/home/gh/python/reolink_AI/logs/` | Alle Logs |
+
+## Web-Interface
+
+`http://192.168.5.23/` — Admin-Seite
+
+- Zeigt 1 bestes Gesicht pro Cluster (Unknown)
+- Video-Player mit eingebetteten Bounding Boxes
+- Gesicht benennen → ganzen Cluster umbenennen
+- Cluster-Übersicht mit allen Gesichtern
+- Filter: Datum, „Auch benannte anzeigen"
+
+## Wichtige Befehle
 
 ```bash
-# Clone repository
-git clone <your-repo-url>
-cd reolink_AI
+# cam2-Stream Status
+sudo systemctl status cam2-stream.service
+journalctl -u cam2-stream -f
 
-# Run installer
-bash scripts/install.sh
+# Chain manuell starten (cam2)
+./run_chain.sh --base-path /var/www/web2/$(date +%Y/%m) --limit 10
 
-# Edit configuration
-nano config/config.yaml
+# Chain manuell starten (cam1)
+./run_chain.sh --base-path /var/www/web1/$(date +%Y/%m) --limit 50
 
-# Start watchdog
-python src/watchdog.py
+# Clustering neu berechnen
+./run_cluster.sh
+
+# Datei neu analysieren (force)
+./run_person.sh --base-path /var/www/web2/2026/05 --force
+
+# GPU-Status
+nvidia-smi
 ```
 
-## Configuration
-
-Edit `config/config.yaml` with your settings:
-
-- Camera RTSP URL
-- Detection zones
-- Recording parameters
-- Database credentials
-- Face recognition settings
-
-## Usage
-
-### Start Watchdog
-```bash
-python src/watchdog.py
-```
-
-### View Dashboard
-```bash
-python scripts/dashboard.py
-# Open http://your-server/reports/
-```
-
-### Manage Face Clusters
-```bash
-python scripts/face_clusters.py list
-python scripts/face_clusters.py rename Unknown_1 "John"
-```
-
-### Check Status
-```bash
-bash scripts/watchdog_status.sh
-```
-
-## Architecture
+## Datenbank
 
 ```
-reolink_AI/
-├── src/
-│   ├── watchdog.py          # Main application
-│   ├── db_logger.py          # Database interface
-│   ├── video_writer.py       # Video recording
-│   ├── face_handler.py       # Face recognition
-│   └── ir_detector.py        # IR mode detection
-├── config/
-│   ├── config.yaml           # Configuration
-│   └── schema.sql            # Database schema
-├── scripts/
-│   ├── dashboard.py          # Web dashboard
-│   ├── cleanup_logs.sh       # Log maintenance
-│   └── install.sh            # Installation
-└── docs/                     # Documentation
+wagodb @ localhost
+User: gh / a12345
+
+Tabellen:
+  cam2_recordings        — Alle Aufnahmen (JPG + MP4)
+  cam2_detected_faces    — Erkannte Gesichter + Embeddings
+  cam2_detected_objects  — YOLO-Objekte (person, car, ...)
+  cam2_analysis_summary  — Pro-Aufnahme Zusammenfassung
 ```
 
-## Database Schema
+## Hardware
 
-See `config/schema.sql` for complete database structure.
-
-Main tables:
-- `cam_video_archive` - Recorded videos
-- `cam_detections` - Object detections
-- `cam_face_recognitions` - Face recognition events
-- `cam_face_embeddings` - Face embeddings database
-
-## Performance
-
-- Detection: ~100ms per frame (4K input)
-- Face Recognition: ~50ms per person
-- Recording: H.264 @ 15 FPS, browser-compatible
-- Storage: ~1-2 MB/minute video
-
-## Troubleshooting
-
-### No person detection at night
-- Check IR mode auto-detection: `python src/ir_detector.py`
-- Lower confidence thresholds in config
-
-### Videos not saved
-- Check `BASE_RECORD_DIR` path
-- Verify directory permissions: `chmod 2775 /var/www/aufnahmen`
-
-### Face recognition not working
-- Verify GPU: `nvidia-smi`
-- Check numpy version: `pip list | grep numpy` (must be <2.0)
-
-## Contributing
-
-Pull requests welcome! Please ensure:
-- Code follows existing style
-- All tests pass
-- Documentation updated
-
-## License
-
-MIT License - See LICENSE file
-
-## Credits
-
-Built with:
-- Ultralytics YOLOv8
-- facenet-pytorch
-- OpenCV
-- PyTorch
-
----
-Made with ❤️ for home security
+| Komponente | Details |
+|------------|---------|
+| Server | Dell (dell-3660), Ubuntu 24.04 |
+| GPU | NVIDIA Tesla P4, 8 GB, CUDA 11.8 |
+| Python | 3.11, venv: `/home/gh/python/venv_py311/` |
+| YOLO | YOLOv8m @ `/opt/models/yolov8m.pt` |
+| Face | InsightFace buffalo_s (RetinaFace + ArcFace) |

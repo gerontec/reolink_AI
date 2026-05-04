@@ -13,20 +13,18 @@ try {
 
 // --- Statistiken (Neue Tabellenstruktur) ---
 $stats = [
-    'total_persons' => $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces")->fetchColumn(),
-    'unnamed_persons' => $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces WHERE person_name = 'Unknown'")->fetchColumn(),
-    'named_persons' => $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam2_detected_faces WHERE person_name != 'Unknown'")->fetchColumn(),
-    'total_recordings' => $pdo->query("SELECT COUNT(*) FROM cam2_recordings")->fetchColumn(),
+    'total_detections'  => $pdo->query("SELECT COUNT(*) FROM cam2_detected_faces")->fetchColumn(),
+    'distinct_clusters' => $pdo->query("SELECT COUNT(DISTINCT face_cluster_id) FROM cam2_detected_faces WHERE face_cluster_id IS NOT NULL")->fetchColumn(),
+    'named_persons'     => $pdo->query("SELECT COUNT(DISTINCT person_name) FROM cam2_detected_faces WHERE person_name != 'Unknown'")->fetchColumn(),
+    'total_recordings'  => $pdo->query("SELECT COUNT(*) FROM cam2_recordings")->fetchColumn(),
 ];
 
 // Filter
 $show_all = isset($_GET['all']);
-$min_confidence = floatval($_GET['min_conf'] ?? 0.4); // 0.4 für bekannte Gesichter, Unknown werden trotzdem angezeigt (siehe WHERE)
-$min_size = intval($_GET['min_size'] ?? 40);       // Gesichter sind oft kleiner als ganze Körper
-$limit = intval($_GET['limit'] ?? 5);
+$date_from = $_GET['date_from'] ?? '2026-05-01';
 
-// --- Personen/Gesichter abrufen (5 neueste mit hoher Qualität) ---
-// Nur Gesichter mit Cluster-ID (≥2 Erkennungen) zeigen
+// --- Ein bestes Gesicht pro Cluster (höchste Konfidenz) ---
+// Nur brauchbare Gesichter: face_cluster_id IS NOT NULL (Noise/Outlier ausgeblendet)
 $sql = "
     SELECT
         f.id,
@@ -39,27 +37,31 @@ $sql = "
         r.camera_name,
         r.recorded_at,
         r.annotated_image_path,
-        (f.bbox_x2 - f.bbox_x1) * (f.bbox_y2 - f.bbox_y1) as area,
         (f.bbox_x2 - f.bbox_x1) as width,
         (f.bbox_y2 - f.bbox_y1) as height,
-        (SELECT COUNT(*) FROM cam2_detected_faces WHERE face_cluster_id = f.face_cluster_id) as cluster_size
+        (SELECT COUNT(*) FROM cam2_detected_faces
+         WHERE face_cluster_id = f.face_cluster_id AND detected_at >= ?) as cluster_size
     FROM cam2_detected_faces f
     JOIN cam2_recordings r ON f.recording_id = r.id
-    WHERE (f.bbox_x2 - f.bbox_x1) >= ?
-      AND f.face_cluster_id IS NOT NULL
+    WHERE f.face_cluster_id IS NOT NULL
+      AND f.detected_at >= ?
+      AND f.id = (
+          SELECT id FROM cam2_detected_faces f2
+          WHERE f2.face_cluster_id = f.face_cluster_id
+            AND f2.detected_at >= ?
+          ORDER BY f2.confidence DESC, (f2.bbox_x2 - f2.bbox_x1) DESC
+          LIMIT 1
+      )
 ";
 
 if (!$show_all) {
     $sql .= " AND f.person_name = 'Unknown'";
 }
 
-// Konfidenz-Filter nur für Unknown anwenden (benannte haben oft 0.0 von manueller Benennung)
-$sql .= " AND (f.person_name != 'Unknown' OR f.confidence >= ?)";
-
-$sql .= " ORDER BY r.recorded_at DESC LIMIT ?";
+$sql .= " ORDER BY f.detected_at DESC";
 
 $stmt = $pdo->prepare($sql);
-$stmt->execute([$min_size, $min_confidence, $limit]);
+$stmt->execute([$date_from, $date_from, $date_from]);
 $persons = $stmt->fetchAll();
 
 // Vorschläge für Autocomplete (Alle bereits vergebenen Namen)
@@ -89,22 +91,22 @@ $named = $pdo->query("
 <body>
     <div class="container">
         <header>
-            <h1>👤 CAM2 Admin - Gesichter zuordnen (Cluster ≥2)</h1>
+            <h1>👤 CAM2 Admin - Verschiedene Gesichter (1 pro Cluster)</h1>
             <div style="text-align: center; color: #666; font-size: 0.85em; margin-bottom: 10px;">
                 Version 2.2.0 | Deploy: <?= date('d.m.Y H:i') ?> | Branch: claude/add-mp4-confidence-scores-cjF5E
             </div>
             <div class="stats">
                 <div class="stat-box">
-                    <span class="stat-value"><?= number_format($stats['total_persons']) ?></span>
-                    <span class="stat-label">Gesichter Total</span>
+                    <span class="stat-value"><?= number_format($stats['total_detections']) ?></span>
+                    <span class="stat-label">Detektionen Total</span>
                 </div>
                 <div class="stat-box unknown">
-                    <span class="stat-value"><?= number_format($stats['unnamed_persons']) ?></span>
-                    <span class="stat-label">Unbekannt</span>
+                    <span class="stat-value"><?= number_format($stats['distinct_clusters']) ?></span>
+                    <span class="stat-label">Verschiedene Gesichter</span>
                 </div>
                 <div class="stat-box known">
                     <span class="stat-value"><?= $stats['named_persons'] ?></span>
-                    <span class="stat-label">Personen</span>
+                    <span class="stat-label">Benannt</span>
                 </div>
             </div>
         </header>
@@ -118,8 +120,7 @@ $named = $pdo->query("
 
         <div class="filters">
             <form method="GET">
-                <label>Anzahl: <input type="number" name="limit" value="<?= $limit ?>" style="width:60px;"></label>
-                <label>Min. Conf: <input type="number" step="0.1" name="min_conf" value="<?= $min_confidence ?>" style="width:60px;"></label>
+                <label>Ab: <input type="date" name="date_from" value="<?= htmlspecialchars($date_from) ?>"></label>
                 <label><input type="checkbox" name="all" <?= $show_all ? 'checked' : '' ?>> Auch benannte</label>
                 <button type="submit" class="btn">Aktualisieren</button>
             </form>
@@ -127,8 +128,8 @@ $named = $pdo->query("
 
         <?php if (empty($persons)): ?>
             <div class="no-results">
-                <h2>Keine Cluster-Gesichter gefunden.</h2>
-                <p>Nur Gesichter mit ≥2 Erkennungen (Cluster) werden angezeigt.</p>
+                <h2>Keine brauchbaren Gesichter gefunden.</h2>
+                <p>Es werden nur Cluster (≥2 Erkennungen) angezeigt. Noise/Outlier sind ausgeblendet.</p>
                 <p>→ Führe <code>python3 cam2_cluster_faces.py</code> aus, um Cluster zu erstellen.</p>
             </div>
         <?php else: ?>

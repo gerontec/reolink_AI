@@ -1,279 +1,96 @@
-# Reolink AI - Vereinfachtes Cron-Setup
+# Services & Cron
 
-## Überblick
+## Aktive Prozesse
 
-**Maximal einfach: Nur Crontab!**
-
-```
-Crontab (alle 2 Min) ──> person.py --limit 50 ──> GPU ──> DB
-```
-
-## Installation
+### cam2-stream.service (systemd, dauerhaft)
 
 ```bash
-cd /home/user/reolink_AI
-sudo ./setup-cron.sh
+sudo systemctl start   cam2-stream.service
+sudo systemctl stop    cam2-stream.service
+sudo systemctl restart cam2-stream.service
+sudo systemctl status  cam2-stream.service
+journalctl -u cam2-stream -f
 ```
 
-Das Script:
-1. ✅ Stoppt ALLE alten Services (video-analyzer, video-recorder, watchdog-cam, reolink-ai)
-2. ✅ Deaktiviert alle Services
-3. ✅ Erstellt einen einzigen Crontab-Eintrag für User 'gh'
-4. ✅ Richtet Logging ein (/var/log/reolink-ai.log)
-5. ✅ Konfiguriert Logrotate (7 Tage)
+Funktion: Liest Cam2 Sub-Stream (640×360), erkennt Personen via YOLO,
+triggert bei Erkennung eine 25s Aufnahme vom Main-Stream (1920×1080).
 
-## Crontab-Eintrag
+Konfiguration in `cam2_stream.py`:
+- `CLIP_DURATION = 25` — Sekunden je Aufnahme
+- `CLIP_COOLDOWN = 90` — Mindestpause zwischen Aufnahmen
+- `CONF_THRESHOLD = 0.45` — YOLO-Schwellwert
+- `FRAME_SKIP = 3` — Jeden N-ten Frame analysieren
 
-```cron
-# Alle 2 Minuten (mit venv + CUDA-Pfaden)
-# WICHTIG: Cron hat minimale Umgebung, daher PATH und LD_LIBRARY_PATH setzen!
-*/2 * * * * PATH=/usr/local/cuda/bin:/usr/bin:/bin LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib cd $PROJECT_DIR && $PROJECT_DIR/venv_py311/bin/python3 person.py --limit 50 >> /var/log/reolink-ai.log 2>&1
-```
+### Cron (alle 5 Minuten) — Email-Fallback
 
-**Wichtig:**
-- ✅ **venv-Python**: Alle Pakete (torch, insightface, etc.) verfügbar
-- ✅ **CUDA-Pfade**: PATH + LD_LIBRARY_PATH für GPU-Support
-- ✅ **Auto-Detection**: Setup-Script erkennt Pfad und User automatisch
-
-**Warum CUDA-Pfade?**
-Cron läuft in minimaler Umgebung ohne normale Shell-Variablen:
-- Ohne `PATH`: CUDA-Tools nicht gefunden
-- Ohne `LD_LIBRARY_PATH`: PyTorch/InsightFace können CUDA-Libs nicht laden
-- → GPU-Detection schlägt fehl!
-
-## Warum nur Cron?
-
-✅ **GPU macht es möglich:**
-- 50 Dateien in ~2 Minuten
-- Keine Daemons nötig
-- Einfach, robust, bewährt
-
-✅ **Vorteile:**
-- Keine systemd-Komplexität
-- Keine Service-Dependencies
-- Automatischer Neustart bei Fehler (Cron)
-- Einfaches Debugging (Logfile)
-
-## Verwaltung
-
-### Crontab anzeigen
 ```bash
 crontab -u gh -l
 ```
 
-### Crontab bearbeiten
-```bash
-crontab -u gh -e
-```
-
-### Intervall ändern
+Einträge:
 ```cron
-*/1 * * * *   # Jede Minute
-*/2 * * * *   # Alle 2 Minuten (Standard)
-*/5 * * * *   # Alle 5 Minuten
-*/10 * * * *  # Alle 10 Minuten
+*/5 * * * * /home/gh/python/reolink_AI/run_mail_processor.sh >> .../logs/mail_chain.log 2>&1
 ```
 
-### Logs ansehen
-```bash
-# Live-Logs
-tail -f /var/log/reolink-ai.log
+Funktion: Verarbeitet eingehende Emails von Cam2 als Fallback
+(falls WLAN-Stream ausgefallen). Extrahiert MP4/JPG-Anhänge und
+triggert ebenfalls die Chain.
 
-# Letzte 100 Zeilen
-tail -n 100 /var/log/reolink-ai.log
+## Chain (run_chain.sh)
 
-# Suche nach Fehlern
-grep -i error /var/log/reolink-ai.log
+Wird von beiden Prozessen getriggert:
+
+```
+run_chain.sh --base-path /var/www/web2/YYYY/MM --limit N
+    │
+    ├── Step 1: run_person.sh  → person.py
+    │     YOLO + InsightFace (GPU)
+    │     Erstellt annotiertes H.264-Video mit Bounding Boxes
+    │
+    ├── Step 2: run_cluster.sh → cam2_cluster_faces.py
+    │     DBSCAN-Clustering (eps=0.4, min_samples=2)
+    │
+    └── Step 3: run_report.sh  → cam2_report.py
+          Statistik-Log
 ```
 
-### Batch-Size anpassen
-```bash
-crontab -u gh -e
-```
+Logs:
+- `logs/chain.log` — Chain-Gesamtlog
+- `logs/person.log` — person.py Detail-Log
+- `logs/cam2_stream.log` — Stream-Monitor-Log
+- `logs/mail_chain.log` — Email-Fallback-Log
 
-Ändere `--limit 50` zu gewünschter Größe:
-- `--limit 25` = Weniger Last
-- `--limit 100` = Mehr Durchsatz
+## Apache-Konfiguration
 
-### Cron-Job manuell testen
-```bash
-su - gh
-cd /home/gh/python/reolink_AI
+`/etc/apache2/sites-available/cam_stream.conf`
 
-# Mit venv
-source venv_py311/bin/activate
-python3 person.py --limit 50
-
-# Oder direkt (wie Cron es macht)
-/home/gh/python/reolink_AI/venv_py311/bin/python3 person.py --limit 50
-```
-
-## Performance
-
-**GPU-Beschleunigung (Tesla P4):**
-- 50 Dateien in ~2 Minuten = 2.4s/Datei
-- Inkl. Face Recognition (InsightFace GPU)
-- Inkl. Object Detection (YOLO GPU)
-- Inkl. Best-Frame-Extraktion (MP4 → JPG)
-
-**Timing:**
-```
-Alle 2 Minuten:   Optimal für normale Last
-Alle 1 Minute:    Für hohen Durchsatz
-Alle 5 Minuten:   Für wenig Aktivität
-```
-
-## Migration von Services
-
-Das Setup-Script macht alles automatisch:
+Aliases:
+- `/web1` → `/var/www/web1/` (Cam1 FTP + annotierte Bilder)
+- `/web2` → `/var/www/web2/` (Cam2 RTSP-Clips)
 
 ```bash
-sudo ./setup-cron.sh
+sudo apache2ctl configtest
+sudo systemctl reload apache2
 ```
 
-**Manuell:**
-```bash
-# Services stoppen
-sudo systemctl stop video-analyzer.service
-sudo systemctl stop video-recorder.service
-sudo systemctl stop watchdog-cam.service
-sudo systemctl stop reolink-ai.timer
+## Postfix
 
-# Services deaktivieren
-sudo systemctl disable video-analyzer.service
-sudo systemctl disable video-recorder.service
-sudo systemctl disable watchdog-cam.service
-sudo systemctl disable reolink-ai.timer
-
-# Crontab einrichten
-sudo crontab -u gh -e
-# Eintrag hinzufügen (siehe oben)
-```
-
-## Alte Services
-
-| Service | Status | Grund |
-|---------|--------|-------|
-| video-analyzer.service | ✗ Deaktiviert | Ersetzt durch Cron |
-| video-recorder.service | ✗ Deaktiviert | Ersetzt durch Cron |
-| watchdog-cam.service | ✗ Deaktiviert | Ersetzt durch Cron |
-| reolink-ai.timer | ✗ Deaktiviert | Ersetzt durch Cron |
-| watchdog-mux.service | ✓ Bleibt | Proxmox-spezifisch |
-
-## Troubleshooting
-
-### Cron läuft nicht
-```bash
-# Cron-Daemon prüfen
-systemctl status cron
-
-# Cron-Daemon starten
-sudo systemctl start cron
-
-# Crontab prüfen
-crontab -u gh -l
-```
-
-### Keine Logs
-```bash
-# Log-Datei prüfen
-ls -la /var/log/reolink-ai.log
-
-# Neu erstellen
-sudo touch /var/log/reolink-ai.log
-sudo chown gh:gh /var/log/reolink-ai.log
-```
-
-### venv nicht gefunden
-```bash
-# Prüfe ob venv existiert
-ls -la /home/gh/python/reolink_AI/venv_py311/
-
-# Falls nicht: venv erstellen
-cd /home/gh/python/reolink_AI
-python3.11 -m venv venv_py311
-source venv_py311/bin/activate
-pip install -r requirements.txt
-
-# Crontab manuell anpassen
-crontab -u gh -e
-# Nutze venv-Python:
-*/2 * * * * cd /home/gh/python/reolink_AI && /home/gh/python/reolink_AI/venv_py311/bin/python3 person.py --limit 50
-```
-
-### GPU nicht gefunden
-```bash
-# Als User 'gh' testen (mit venv!)
-su - gh
-cd /home/gh/python/reolink_AI
-source venv_py311/bin/activate
-python3 -c "import torch; print(torch.cuda.is_available())"
-
-# Falls GPU fehlt: Cron-Umgebung testen (wie Cron es sieht)
-PATH=/usr/local/cuda/bin:/usr/bin:/bin \
-LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/lib \
-/home/gh/python/reolink_AI/venv_py311/bin/python3 -c "import torch; print(torch.cuda.is_available())"
-
-# Wenn das funktioniert, ist Crontab korrekt
-# Wenn nicht: CUDA-Installation prüfen
-nvidia-smi
-ls -la /usr/local/cuda/lib64/libcudart.so*
-```
-
-**Wichtig:** Das setup-cron.sh setzt diese Pfade automatisch!
-
-### MySQL Connection Error
-```bash
-# MySQL-Socket prüfen (Cron hat andere Umgebung!)
-ls -la /var/run/mysqld/mysqld.sock
-
-# In person.py DB_CONFIG anpassen (falls nötig):
-# 'unix_socket': '/var/run/mysqld/mysqld.sock'
-```
-
-## Monitoring
-
-### Letzte Ausführung
-```bash
-tail -n 50 /var/log/reolink-ai.log | grep "Verarbeitung abgeschlossen"
-```
-
-### Statistik
-```bash
-# Wie viele Dateien heute?
-grep "$(date +%Y-%m-%d)" /var/log/reolink-ai.log | grep "verarbeitet" | wc -l
-
-# Fehler heute?
-grep "$(date +%Y-%m-%d)" /var/log/reolink-ai.log | grep -i error
-```
-
-### Datenbank-Report
-```bash
-python3 cam2_report.py
-```
-
-### GPU-Auslastung
-```bash
-watch -n 1 nvidia-smi
-```
-
-## Backup
+Empfängt Emails von Cam2 (192.168.178.0/24) auf Port 25.
+Zustellung in Maildir `/home/gh/Maildir/new/`.
 
 ```bash
-# Crontab sichern
-crontab -u gh -l > /home/user/reolink_AI/crontab-backup.txt
-
-# Crontab wiederherstellen
-crontab -u gh /home/user/reolink_AI/crontab-backup.txt
+systemctl status postfix
+# Test:
+swaks --to gh@heissa.de --server 192.168.5.23
 ```
 
-## Deinstallation
+## GPU-Environment
 
+Für alle AI-Prozesse (systemd + cron):
 ```bash
-# Crontab-Eintrag entfernen
-crontab -u gh -e
-# Zeile mit person.py löschen
-
-# Oder komplett löschen:
-crontab -u gh -r
+export LD_LIBRARY_PATH=/usr/local/cuda-11.8/targets/x86_64-linux/lib:$LD_LIBRARY_PATH
+export CUDA_VISIBLE_DEVICES=0
+export CUDA_MODULE_LOADING=LAZY
 ```
+
+Gesetzt in: `run_person.sh`, `run_chain.sh`, `cam2-stream.service`

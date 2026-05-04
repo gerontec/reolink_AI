@@ -89,34 +89,37 @@ def process_email_file(email_path):
         logger.info(f"  Datum: {date}")
 
         attachment_count = 0
+        found_count = 0
         output_dir = get_output_directory()
 
         # Durchsuche alle Teile der Email
         for part in msg.walk():
-            # Nur Attachments verarbeiten
+            content_type = part.get_content_type()
             content_disposition = part.get_content_disposition()
+            logger.info(f"  Part: type={content_type}  disposition={content_disposition}  filename={part.get_filename()}")
 
             if content_disposition == 'attachment':
                 filename = part.get_filename()
 
                 if not filename:
-                    logger.debug(f"  Attachment ohne Dateinamen übersprungen")
+                    logger.info(f"  Attachment ohne Dateinamen übersprungen")
                     continue
 
                 # Prüfe Dateiendung
                 file_ext = Path(filename).suffix.lower()
                 if file_ext not in ALLOWED_EXTENSIONS:
-                    logger.debug(f"  Überspringe {filename} (nicht erlaubte Endung: {file_ext})")
+                    logger.info(f"  Überspringe {filename} (nicht erlaubte Endung: {file_ext})")
                     continue
+
+                found_count += 1
 
                 # Bereinige Dateinamen
                 filename = sanitize_filename(filename)
 
                 # Füge Zeitstempel hinzu um Duplikate zu vermeiden
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                name_parts = Path(filename).stem
                 extension = Path(filename).suffix
-                unique_filename = f"Camera1_00_{timestamp}{extension}"
+                unique_filename = f"Camera2_00_{timestamp}{extension}"
 
                 output_path = output_dir / unique_filename
 
@@ -132,9 +135,7 @@ def process_email_file(email_path):
                         logger.info(f"  ✓ Extrahiert: {unique_filename} ({file_size:.2f} MB)")
                         logger.info(f"    Ziel: {output_path}")
 
-                        # Setze Berechtigungen
                         os.chmod(output_path, 0o664)
-                        shutil.chown(output_path, user='gh', group='www-data')
 
                         attachment_count += 1
                     else:
@@ -144,10 +145,13 @@ def process_email_file(email_path):
                     logger.error(f"  Fehler beim Speichern von {filename}: {e}")
                     continue
 
-        if attachment_count == 0:
-            logger.info(f"  Keine Attachments gefunden oder extrahiert")
+        if found_count == 0:
+            logger.info(f"  Keine Attachments gefunden")
+        elif attachment_count == 0:
+            logger.warning(f"  {found_count} Attachment(s) gefunden aber keines gespeichert")
 
-        return attachment_count
+        # found_count: JPG-Attachments erkannt (auch wenn Speichern fehlschlug)
+        return attachment_count, found_count
 
     except Exception as e:
         logger.error(f"Fehler beim Verarbeiten von {email_path.name}: {e}")
@@ -196,12 +200,19 @@ def process_maildir():
         if email_path.is_dir() or email_path.name.startswith('.'):
             continue
 
-        attachment_count = process_email_file(email_path)
+        attachment_count, found_count = process_email_file(email_path)
         total_attachments += attachment_count
         total_emails += 1
 
-        # Verschiebe verarbeitete Email
-        move_to_processed(email_path)
+        if attachment_count > 0:
+            move_to_processed(email_path)
+        elif found_count > 0:
+            # JPG gefunden aber Speichern fehlgeschlagen → archivieren statt löschen
+            logger.warning(f"  → Mail mit JPG archiviert (Speicherfehler): {email_path.name}")
+            move_to_processed(email_path)
+        else:
+            email_path.unlink()
+            logger.info(f"  → Email ohne JPG gelöscht: {email_path.name}")
 
     return total_emails, total_attachments
 
@@ -224,7 +235,8 @@ def main():
     logger.info(f"  Attachments extrahiert: {attachments_extracted}")
     logger.info("=" * 70)
 
-    return 0 if emails_processed > 0 else 1
+    # Exit 0 = new attachments extracted (trigger chain), 1 = nothing new
+    return 0 if attachments_extracted > 0 else 1
 
 
 if __name__ == "__main__":
