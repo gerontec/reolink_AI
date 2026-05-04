@@ -506,7 +506,7 @@ class AIAnalyzer:
                     best_similarity = similarities[best_match_index]
 
                     # Threshold für Match (cosine similarity: 0.4-0.6 ist gut)
-                    if best_similarity > 0.5:
+                    if best_similarity > 0.4:
                         name = self.known_face_names[best_match_index]
                         confidence = float(best_similarity)  # Recognition-Score überschreibt det_score
 
