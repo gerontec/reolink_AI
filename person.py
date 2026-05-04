@@ -328,7 +328,7 @@ class AIAnalyzer:
             # FaceAnalysis mit GPU
             providers = ['CUDAExecutionProvider'] if self.device == 'cuda' else ['CPUExecutionProvider']
             self.face_app = FaceAnalysis(
-                name='buffalo_s',  # Guter Kompromiss zwischen Speed und Accuracy
+                name='buffalo_l',  # Bessere Intra-Person-Konsistenz (det_10g + R50 vs MobileFaceNet)
                 providers=providers
             )
 
@@ -337,7 +337,7 @@ class AIAnalyzer:
             self.face_app.prepare(ctx_id=ctx_id, det_size=(640, 640), det_thresh=0.3)
 
             logger.info(f"✓ InsightFace Model geladen - Device: {self.device}")
-            logger.info(f"  Model: buffalo_s (RetinaFace + ArcFace)")
+            logger.info(f"  Model: buffalo_l (det_10g + w600k_r50)")
             logger.info(f"  Detection Size: 640x640, det_thresh=0.3")
 
         except Exception as e:
