@@ -608,7 +608,7 @@ class AIAnalyzer:
             
             if not cap.isOpened():
                 logger.error(f"Video konnte nicht geöffnet werden: {video_path}")
-                return results
+                return None
             
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             results['total_frames'] = total_frames
@@ -650,14 +650,21 @@ class AIAnalyzer:
                         'vehicles': frame_results['vehicles'].copy(),
                     }
 
-                # Frames mit Gesicht haben immer Priorität über Frames ohne Gesicht.
-                # Unter Frames mit Gesicht gewinnt die höchste det_score-Summe.
-                face_quality = sum(f.get('det_score', 0.5) for f in frame_results['faces'])
-                face_bonus = 1000 if face_quality > 0 else 0
-                frame_score = face_bonus + face_quality * 10 + frame_results['persons'] * 5 + len(frame_results['objects'])
+                # Best frame = Frame mit dem größten, qualitativ besten Gesicht.
+                # Gesichtsgröße (Pixel) dominiert den Score, da große Gesichter
+                # frontaler und schärfer sind. Frames ohne Gesicht werden ignoriert.
+                face_score = 0.0
+                for f in frame_results['faces']:
+                    bb = f.get('bbox', {})
+                    w = bb.get('x2', 0) - bb.get('x1', 0)
+                    h = bb.get('y2', 0) - bb.get('y1', 0)
+                    area = w * h
+                    det  = f.get('confidence', 0.0)
+                    face_score = max(face_score, area * det)
+                frame_score = face_score  # nur Frames mit Gesicht können gewinnen
 
                 # Track best frame (for complete object data with confidence AND face embeddings)
-                if frame_score > best_frame_score:
+                if frame_score > 0 and frame_score > best_frame_score:
                     best_frame_score = frame_score
                     # Store COMPLETE detections (with confidence, bbox, and embeddings!) from best frame
                     best_frame_results = {
@@ -737,21 +744,34 @@ class AIAnalyzer:
             'vehicles': [],
             'persons': 0
         }
-        
+
         try:
-            # Gesichtserkennung
-            face_results = self._detect_faces(image)
-            results['faces'] = face_results
-            
-            # Objekt-Detektion
+            # Erst YOLO — Gesichtserkennung nur wenn Person erkannt
             yolo_results = self._detect_objects(image)
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
-        
+
+            if yolo_results['persons'] > 0:
+                # YOLO-Person-Bboxen sammeln
+                person_bboxes = [
+                    obj['bbox'] for obj in yolo_results['objects']
+                    if obj['class'] == 'person'
+                ]
+                all_faces = self._detect_faces(image)
+                # Nur Gesichter behalten die mit einer YOLO-Person-Bbox überlappen
+                results['faces'] = [
+                    f for f in all_faces
+                    if any(
+                        f['bbox']['x1'] < pb['x2'] and f['bbox']['x2'] > pb['x1'] and
+                        f['bbox']['y1'] < pb['y2'] and f['bbox']['y2'] > pb['y1']
+                        for pb in person_bboxes
+                    )
+                ]
+
         except Exception as e:
             logger.error(f"Fehler bei Array-Analyse: {e}")
-        
+
         return results
 
 
