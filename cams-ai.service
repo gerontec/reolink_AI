@@ -1,0 +1,29 @@
+[Unit]
+Description=Cam1+Cam2 AI Processor (ein Prozess, ein CUDA-Kontext: FTP-Watch cam1 + RTSP-Live cam2)
+After=network.target mariadb.service proftpd.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+User=gh
+Group=www-data
+UMask=0002
+WorkingDirectory=/home/gh/python/reolink_AI
+
+Environment="LD_LIBRARY_PATH=/home/gh/python/venv_py311/lib/python3.11/site-packages/nvidia/cufft/lib:/home/gh/python/venv_py311/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/home/gh/python/venv_py311/lib/python3.11/site-packages/nvidia/cublas/lib:/home/gh/python/venv_py311/lib/python3.11/site-packages/torch/lib:/usr/lib/x86_64-linux-gnu"
+Environment="CUDA_VISIBLE_DEVICES=0"
+Environment="CUDA_MODULE_LOADING=LAZY"
+Environment="PYTHONUNBUFFERED=1"
+
+ExecStart=/home/gh/python/venv_py311/bin/python3 /home/gh/python/reolink_AI/cams_ai.py
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cams-ai
+
+MemoryMax=7G
+
+[Install]
+WantedBy=multi-user.target

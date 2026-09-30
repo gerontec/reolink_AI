@@ -51,15 +51,26 @@ class Config:
     }
 
     CONF_THRESHOLD  = 0.45   # YOLO person detection confidence
-    FACE_THRESHOLD  = 0.40   # InsightFace cosine-similarity match threshold
+    FACE_THRESHOLD  = 0.45   # InsightFace cosine-similarity match threshold (0.45: 0 Fremd-Fehlmatch bei 80er-gh-Bank)
+    TRACK_SIM       = 0.50   # cosine: Zugehoerigkeit zum selben Gesichts-Track (#1 Aggregation)
+    SUB_FACE_THRESH = 0.50   # InsightFace det_score on sub-stream → Aufnahme-Trigger
     FRAME_SKIP      = 3      # sub-stream: analyse every N-th frame
     ANALYSIS_SAMPLE = 10     # recorded video: run AI on every N-th frame
     CLIP_DURATION   = 20     # seconds of main stream to record
-    CLIP_COOLDOWN   = 60     # minimum seconds between recordings
+    CLIP_COOLDOWN   = 29     # minimum seconds between recordings (29 < 30s Clip: leichte Ueberlappung moeglich)
     CLIP_MIN_SIZE   = 50_000 # bytes – discard clips smaller than this
     RECONNECT_DELAY = 5      # seconds before RTSP reconnect
     FFMPEG_TIMEOUT  = 8      # seconds for graceful ffmpeg shutdown
     RAW_KEEP_DAYS   = 3      # delete *_raw.mp4 files older than this
+
+    # Output-Clip: an die gemessene WiFi-Physik angepasst.
+    # cam2 auf f7240: RSSI ~45dB (~-68dBm), HT bis 216 Mbit; Main-Quelle nur ~1,1 Mbit/s.
+    # → Link trägt native 1080p locker, kein Downscale nötig (volle Auflösung fürs
+    #   Gesichts-Erkennen). Bitrate moderat gedeckelt, faststart bleibt.
+    REC_HEIGHT      = 1080   # native Main-Höhe (scale=-2:1080 = no-op bei 1920x1080)
+    REC_CRF         = 23     # bessere Qualität (Bandbreite ist reichlich da)
+    REC_MAXRATE_K   = 3000   # kbit/s Spitzen-Bitrate-Deckel (Bewegungs-Headroom)
+    REC_BUFSIZE_K   = 6000   # kbit VBV-Puffer
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
@@ -71,6 +82,7 @@ logging.basicConfig(
     format="%(asctime)s [cam2] %(levelname)s %(message)s",
     handlers=[
         logging.FileHandler(Config.LOG_FILE),
+        __import__('logging.handlers', fromlist=['x']).RotatingFileHandler('/tmp/cam2-ai.log', maxBytes=10*1024*1024, backupCount=1),
     ],
 )
 log = logging.getLogger(__name__)
@@ -158,10 +170,10 @@ class Database:
                          if f.get("embedding") is not None else None)
             cur.execute("""
                 INSERT INTO cam2_detected_faces
-                  (recording_id, person_name, confidence,
+                  (recording_id, person_name, confidence, det_score,
                    bbox_x1, bbox_y1, bbox_x2, bbox_y2, face_embedding)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (rec_id, f["name"], f["conf"],
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (rec_id, f["name"], f["conf"], f.get("det_score", 0.0),
                   b[0], b[1], b[2], b[3], emb_bytes))
 
     def _insert_persons(self, cur, rec_id: int, persons: List[Dict]):
@@ -252,6 +264,28 @@ class ModelManager:
             self._known_enc.append(emb / n if n > 0 else emb)
             self._known_names.append(img_path.stem.replace("_", " "))
             log.info("  Known: %s", img_path.stem)
+
+        # Embedding-Banken (.npy): Matrix (N,512) L2-normierter Embeddings, alle
+        # unter dem Datei-Stem als Name -> robuste Multi-Referenz pro Person
+        # (z.B. gh.npy = viele gh-Gesichter aus einem Clip). _match_face nimmt
+        # die max-Similarity ueber die Bank.
+        for npy_path in sorted(d.glob("*.npy")):
+            try:
+                arr = np.load(str(npy_path))
+            except Exception as e:
+                log.warning("Kann %s nicht laden: %s", npy_path.name, e)
+                continue
+            if arr.ndim == 1:
+                arr = arr[None, :]
+            bank_name = npy_path.stem.replace("_", " ")
+            cnt = 0
+            for emb in arr:
+                nn = float(np.linalg.norm(emb))
+                self._known_enc.append(emb / nn if nn > 0 else emb)
+                self._known_names.append(bank_name)
+                cnt += 1
+            log.info("  Known-Bank: %s (%d Embeddings)", npy_path.stem, cnt)
+
         log.info("%d bekannte(s) Gesicht(er) geladen", len(self._known_names))
 
     # ── Inferenz ───────────────────────────────────────────────────────────────
@@ -269,8 +303,24 @@ class ModelManager:
             persons.append({"bbox": (x1, y1, x2, y2), "conf": float(box.conf)})
         return persons
 
+    def detect_faces(self, frame) -> List:
+        """InsightFace auf einem Frame – nur Gesichter über det_score-Schwelle.
+
+        Wird im Sub-Stream als Aufnahme-Trigger genutzt: erst ein echtes
+        Gesicht (nicht bloß eine Person) löst die Aufnahme aus.
+        """
+        if self._face_app is None:
+            return []
+        with self._lock:
+            raw_faces = self._face_app.get(frame)
+        return [f for f in raw_faces
+                if float(getattr(f, "det_score", 0.0)) >= self._cfg.SUB_FACE_THRESH]
+
     def detect_full(self, frame) -> Dict[str, List]:
-        """YOLO + InsightFace für aufgezeichnetes Video."""
+        """YOLO (Personen) + InsightFace (Gesichter) für aufgezeichnetes Video.
+
+        Gesichter werden unabhängig von Personen-Erkennung gespeichert.
+        """
         with self._lock:
             yolo_res = self._yolo(
                 frame, verbose=False,
@@ -278,28 +328,27 @@ class ModelManager:
             )
 
         persons: List[Dict] = []
-        person_bboxes: List[Tuple] = []
         for box in yolo_res[0].boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             persons.append({"bbox": (x1, y1, x2, y2), "conf": float(box.conf)})
-            person_bboxes.append((x1, y1, x2, y2))
 
+        # Gesichter UNABHÄNGIG von YOLO-Personen erkennen & speichern:
+        # Embedding-Matrix landet auch bei Nahaufnahmen ohne sichtbaren Körper
+        # in der DB. Personen-Boxen dienen nur noch zur Annotierung.
         faces: List[Dict] = []
-        if person_bboxes and self._face_app is not None:
+        if self._face_app is not None:
             with self._lock:
                 raw_faces = self._face_app.get(frame)
             for face in raw_faces:
-                fx1, fy1, fx2, fy2 = map(int, face.bbox)
-                if not any(
-                    fx1 < px2 and fx2 > px1 and fy1 < py2 and fy2 > py1
-                    for px1, py1, px2, py2 in person_bboxes
-                ):
+                det = float(getattr(face, "det_score", 0.0))
+                if det < self._cfg.SUB_FACE_THRESH:
                     continue
+                fx1, fy1, fx2, fy2 = map(int, face.bbox)
                 name, conf = self._match_face(face.embedding)
                 faces.append({
                     "name":      name,
                     "conf":      conf,
-                    "det_score": float(getattr(face, "det_score", 0.0)),
+                    "det_score": det,
                     "bbox":      (fx1, fy1, fx2, fy2),
                     "embedding": face.embedding,
                 })
@@ -396,17 +445,31 @@ class ClipRecorder:
 
     # ── Haupt-Pipeline ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _ensure_dir(d: Path):
+        """Verzeichnis anlegen und auf 2775 (setgid, group-writable) setzen.
+
+        Die übergeordneten /var/www/web2-Ordner sind Gruppe www-data + setgid,
+        daher erben neue Unterordner Gruppe www-data. setgid+group-write sorgt
+        dafür, dass der www-data-Cron (Retention 60 Tage) die Inhalte löschen darf.
+        """
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(str(d), 0o2775)
+        except PermissionError:
+            pass
+
     def _run_pipeline(self):
         ts      = datetime.now()
         ym      = ts.strftime("%Y/%m")
         stem    = f"Camera2_00_{ts.strftime('%Y%m%d_%H%M%S')}"
         out_dir = self._cfg.OUTPUT_BASE / ym
-        out_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir(out_dir)
 
         raw_path = out_dir / f"{stem}_raw.mp4"
         out_path = out_dir / f"{stem}.mp4"
         ann_dir  = out_dir / "annotated"
-        ann_dir.mkdir(exist_ok=True)
+        self._ensure_dir(ann_dir)
         best_jpg = ann_dir / f"best_{stem}.jpg"
 
         # Phase 1
@@ -417,6 +480,17 @@ class ClipRecorder:
         analysis = self._annotate(raw_path, out_path)
         if analysis is None or not out_path.exists():
             log.error("Annotierung fehlgeschlagen: %s", stem)
+            return
+
+        # Fehl-Trigger: Phase-2 fand weder Person noch Gesicht -> Clip verwerfen
+        # (kein DB-Eintrag, Dateien loeschen).
+        if analysis.get("n_persons_total", 0) == 0 and analysis.get("n_faces_total", 0) == 0:
+            log.info("Phase-2: 0 Personen / 0 Gesichter - Clip verworfen: %s", stem)
+            for _p in (out_path, raw_path):
+                try:
+                    _p.unlink()
+                except FileNotFoundError:
+                    pass
             return
 
         # Best-Frame JPG
@@ -582,11 +656,52 @@ class ClipRecorder:
             raw_path.unlink(missing_ok=True)
             return False
 
+        os.chmod(str(raw_path), 0o664)
         log.info("Raw-Clip gespeichert: %s  %.1f MB",
                  raw_path.name, raw_size / 1_048_576)
         return True
 
     # ── Phase 2: Analyse + Annotierung ────────────────────────────────────────
+
+    @staticmethod
+    def _probe_avg_fps(path: Path) -> Optional[float]:
+        """Echte Durchschnitts-fps (avg_frame_rate) via ffprobe; None bei Fehler."""
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=avg_frame_rate",
+                 "-of", "default=nk=1:nw=1", str(path)],
+                capture_output=True, text=True, timeout=15,
+            )
+            num, _, den = r.stdout.strip().partition("/")
+            d = float(den) if den else 1.0
+            val = float(num) / d if d else 0.0
+            return val if val > 0 else None
+        except Exception:
+            return None
+
+    def _track_aggregate_match(self, best_faces, all_faces):
+        """#1 Track-Aggregation: pro Best-Frame-Gesicht alle Embeddings derselben
+        Person ueber den Clip mitteln und EINMAL matchen (stabiler als Einzelframe).
+        Ueberschreibt name/conf der Best-Frame-Gesichter mit der Track-Entscheidung;
+        Bbox/Crop/gespeichertes Embedding bleiben unveraendert."""
+        if not best_faces or not all_faces:
+            return
+        def _n(v):
+            m = np.linalg.norm(v)
+            return v / m if m > 0 else v
+        pool = [(_n(g["embedding"]), g["embedding"]) for g in all_faces]
+        for f in best_faces:
+            ref = _n(f["embedding"])
+            embs = [raw for nn, raw in pool if float(np.dot(ref, nn)) >= self._cfg.TRACK_SIM]
+            if not embs:
+                embs = [f["embedding"]]
+            mean = np.mean(embs, axis=0)
+            old_name, old_conf = f.get("name"), float(f.get("conf", 0.0))
+            name, conf = self._models._match_face(mean)
+            f["name"], f["conf"], f["track_size"] = name, conf, len(embs)
+            log.info("  Track-Aggregat: %s conf=%.3f aus %d Frames (Einzelframe war %s/%.3f)",
+                     name, conf, len(embs), old_name, old_conf)
 
     def _annotate(
         self, raw_path: Path, out_path: Path
@@ -596,17 +711,28 @@ class ClipRecorder:
             log.error("Kann Raw-Clip nicht öffnen: %s", raw_path)
             return None
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        # Reolink meldet nominales r_frame_rate ~2x der echten Rate; cv2 liest
+        # diesen Nominalwert -> Re-Encode mit -r erzeugte sonst "Zeitraffer".
+        # Daher echte Durchschnitts-fps (avg_frame_rate) aus dem Clip ziehen.
+        fps = self._probe_avg_fps(raw_path) or cap.get(cv2.CAP_PROP_FPS) or 25.0
         w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         log.info("Analysiere %s  %dx%d @ %.1f fps", raw_path.name, w, h, fps)
 
+        # Output: mittlere Auflösung (Höhe REC_HEIGHT, Breite -2 = AR erhalten),
+        # WiFi-tauglicher Bitraten-Deckel, H.264 High/yuv420p + faststart →
+        # Firefox spielt die Datei per Klick sofort ab (moov-Atom am Anfang).
         enc_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "warning",
             "-f", "rawvideo", "-vcodec", "rawvideo",
             "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", str(fps),
             "-i", "pipe:0",
-            "-vcodec", "libx264", "-preset", "fast", "-crf", "23",
+            "-vf", f"scale=-2:{self._cfg.REC_HEIGHT}",
+            "-vcodec", "libx264", "-preset", "fast",
+            "-profile:v", "high", "-level", "4.0",
+            "-crf", str(self._cfg.REC_CRF),
+            "-maxrate", f"{self._cfg.REC_MAXRATE_K}k",
+            "-bufsize", f"{self._cfg.REC_BUFSIZE_K}k",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             "-y", str(out_path),
@@ -638,13 +764,21 @@ class ClipRecorder:
                     all_persons.extend(cur_dets["persons"])
                     all_faces.extend(cur_dets["faces"])
 
-                    score = 0.0
-                    for f in cur_dets["faces"]:
-                        x1, y1, x2, y2 = f["bbox"]
-                        area  = (x2 - x1) * (y2 - y1)
-                        score = max(score, area * f["det_score"])
-                    if score > best_score:
-                        best_score = score
+                    # Frame-Score: Gesichter dominieren, Personen als Fallback.
+                    # Nur der EINE beste Frame wird gespeichert; ausschließlich
+                    # seine Detektionen landen in der DB → Frontend-Crops stimmen
+                    # immer (kein Cropping aus fremden Frames = kein "Rasen").
+                    fscore = sum(
+                        (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1])
+                        * f["det_score"] for f in cur_dets["faces"]
+                    )
+                    pscore = sum(
+                        (p["bbox"][2] - p["bbox"][0]) * (p["bbox"][3] - p["bbox"][1])
+                        * p["conf"] for p in cur_dets["persons"]
+                    )
+                    frame_score = fscore * 1_000_000 + pscore
+                    if frame_score > best_score and (cur_dets["faces"] or cur_dets["persons"]):
+                        best_score = frame_score
                         best_dets  = {
                             "persons": list(cur_dets["persons"]),
                             "faces":   list(cur_dets["faces"]),
@@ -678,16 +812,29 @@ class ClipRecorder:
             return None
 
         os.chmod(str(out_path), 0o664)
+        # Nur die Detektionen des Best-Frames speichern (passen zum gespeicherten
+        # best_*.jpg → Frontend-Crop korrekt). all_faces/all_persons dienten nur
+        # der Frame-Auswahl/Live-Annotation.
+        best_dets = best_dets or {"persons": [], "faces": []}
+
+        # #1 Track-Level-Aggregation: Identitaet NICHT pro Einzelframe entscheiden.
+        # Pro Best-Frame-Gesicht alle clip-weiten Embeddings derselben Person
+        # (Cosine >= TRACK_SIM) mitteln und EINMAL gegen die Galerie matchen ->
+        # rauschstabile Zuordnung. Bbox/Crop bleiben vom Best-Frame.
+        self._track_aggregate_match(best_dets["faces"], all_faces)
+
         log.info(
-            "Annotiertes Video: %s  %.1f MB  (%d Frames, %d Gesichts-Detektionen)",
+            "Annotiertes Video: %s  %.1f MB  (%d Frames; Best-Frame: %d Gesicht(er) / %d Person(en); %d Face-Detektionen gesamt)",
             out_path.name, out_path.stat().st_size / 1_048_576,
-            frame_idx, len(all_faces),
+            frame_idx, len(best_dets["faces"]), len(best_dets["persons"]), len(all_faces),
         )
         return {
-            "faces":      all_faces,
-            "persons":    all_persons,
+            "faces":      best_dets["faces"],
+            "persons":    best_dets["persons"],
             "best_dets":  best_dets,
             "best_frame": best_frame,
+            "n_persons_total": len(all_persons),
+            "n_faces_total":   len(all_faces),
         }
 
     # ── ffmpeg Helpers ─────────────────────────────────────────────────────────
@@ -767,8 +914,11 @@ class StreamMonitor:
                 if not persons:
                     continue
 
+                # YOLO-Person = schneller Watchdog → sofort Aufnahme starten.
+                # (Schneller als YOLO+InsightFace; der Annähernde ist beim Main-Start
+                #  noch im Bild.) Gesichts-Erkennung + Embedding macht Phase 2 am Clip.
                 max_conf = max(p["conf"] for p in persons)
-                log.info("Person(en): %d  max_conf=%.2f", len(persons), max_conf)
+                log.info("Person(en): %d  max_conf=%.2f – Trigger", len(persons), max_conf)
                 self._recorder.trigger()
 
             cap.release()

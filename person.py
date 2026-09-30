@@ -44,6 +44,7 @@ DB_CONFIG = {
 
 # AI Model paths
 YOLO_MODEL_PATH = "/opt/models/yolov8m.pt"
+OBJECT_CONF_THRESHOLD = 0.45  # nur gut erkannte Objekte speichern (YOLO-Default 0.25 war zu niedrig)
 KNOWN_FACES_DIR = "/opt/known_faces"
 
 # GPU Configuration
@@ -55,7 +56,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('/home/gh/python/logs/reolink_processor.log'),
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        __import__('logging.handlers', fromlist=['x']).RotatingFileHandler('/tmp/cam1-ai.log', maxBytes=10*1024*1024, backupCount=1),
     ]
 )
 logger = logging.getLogger(__name__)
@@ -292,6 +294,9 @@ class AIAnalyzer:
         # InsightFace laden (GPU-beschleunigt)
         self._load_insightface()
 
+        # ALPR (Kennzeichen) laden – nur cam1/FTP relevant, fail-safe
+        self._load_alpr()
+
         # Bekannte Gesichter laden
         self._load_known_faces()
 
@@ -427,7 +432,58 @@ class AIAnalyzer:
             'memory_total_gb': torch.cuda.get_device_properties(self.gpu_id).total_memory / 1024**3
         }
     
-    def analyze_image(self, image_path: Path) -> Dict[str, Any]:
+    def _load_alpr(self):
+        """Laedt fast-alpr (Kennzeichen). Fail-safe: bei Fehler self.alpr=None."""
+        try:
+            from fast_alpr import ALPR
+            P = ["CUDAExecutionProvider", "CPUExecutionProvider"] if self.device == "cuda" else ["CPUExecutionProvider"]
+            self.alpr = ALPR(detector_model="yolo-v9-t-384-license-plate-end2end", detector_providers=P,
+                             ocr_model="european-plates-mobile-vit-v2-model", ocr_providers=P)
+            logger.info("\u2713 ALPR (Kennzeichen) geladen")
+        except Exception as e:
+            self.alpr = None
+            logger.warning(f"ALPR nicht geladen (Kennzeichen deaktiviert): {e}")
+
+    def _detect_plate(self, frame, vehicles):
+        """Bestes Kennzeichen NUR innerhalb der YOLO-Fahrzeug-Boxen (gegen Landschafts-FP)."""
+        if not getattr(self, "alpr", None) or not vehicles:
+            return None
+        import re as _re
+        def _cv(c):
+            if c is None: return 0.0
+            if isinstance(c, (list, tuple)):
+                v = [float(x) for x in c if x is not None]; return sum(v)/len(v) if v else 0.0
+            return float(c)
+        H, W = frame.shape[:2]; best = None
+        for v in vehicles:
+            if v.get("class") == "bicycle":
+                continue  # Fahrraeder haben kein Kennzeichen (bleiben aber als Objekt erkannt)
+            bb = v.get("bbox", {})
+            x1, y1 = int(max(0, bb.get("x1", 0))), int(max(0, bb.get("y1", 0)))
+            x2, y2 = int(min(W, bb.get("x2", 0))), int(min(H, bb.get("y2", 0)))
+            car = frame[y1:y2, x1:x2]
+            if car.size == 0: continue
+            ch, cw = car.shape[:2]
+            _TILE = 500  # Ziel-Tile-Kantenlaenge: erhaelt Platten-Aufloesung bei grossen Frames
+            cols = max(1, round(cw / _TILE)); rows = max(1, round(ch / _TILE)); ov = 0.25
+            tw, th = cw // max(cols, 1), ch // max(rows, 1)
+            for cy in range(rows):
+                for cx in range(cols):
+                    a0, b0 = max(0, int(cx*tw - ov*tw)), max(0, int(cy*th - ov*th))
+                    a1, b1 = min(cw, int((cx+1)*tw + ov*tw)), min(ch, int((cy+1)*th + ov*th))
+                    try: preds = self.alpr.predict(car[b0:b1, a0:a1])
+                    except Exception: continue
+                    for r in preds:
+                        o = getattr(r, "ocr", None); d = getattr(r, "detection", None)
+                        if not o or not getattr(o, "text", ""): continue
+                        oc = _cv(getattr(o, "confidence", 0)); dc = _cv(getattr(d, "confidence", 0))
+                        txt = _re.sub(r"[^A-Z0-9]", "", (o.text or "").upper())
+                        if oc < 0.60 or dc < 0.25 or len(txt) < 5: continue
+                        if best is None or oc > best["conf"]:
+                            best = {"text": txt, "conf": oc, "bbox": (x1, y1, x2, y2)}
+        return best
+
+    def analyze_image(self, image_path: Path, camera_name: str = None) -> Dict[str, Any]:
         """Analysiert ein einzelnes Bild"""
         results = {
             'faces': [],
@@ -445,23 +501,59 @@ class AIAnalyzer:
                 logger.error(f"Bild konnte nicht geladen werden: {image_path}")
                 return results
             
-            # Gesichtserkennung (läuft auf GPU - InsightFace mit CUDA)
-            face_results = self._detect_faces(image)
-            results['faces'] = face_results
-
-            # Objekt-Detektion mit YOLO (läuft auf GPU)
+            # Erst YOLO — Gesichtserkennung nur wenn Person erkannt (gegen Nicht-Person-Fehltreffer)
             yolo_results = self._detect_objects(image)
             results['objects'] = yolo_results['objects']
             results['vehicles'] = yolo_results['vehicles']
             results['persons'] = yolo_results['persons']
+
+            if yolo_results['persons'] > 0:
+                person_bboxes = [o['bbox'] for o in yolo_results['objects'] if o['class'] == 'person']
+                all_faces = self._detect_faces(image, require_landmarks=(camera_name == 'Camera1'))
+                results['faces'] = [
+                    f for f in all_faces
+                    if any(f['bbox']['x1'] < pb['x2'] and f['bbox']['x2'] > pb['x1'] and
+                           f['bbox']['y1'] < pb['y2'] and f['bbox']['y2'] > pb['y1']
+                           for pb in person_bboxes)
+                ]
             
         except Exception as e:
             logger.error(f"Fehler bei Bildanalyse {image_path}: {e}")
         
         return results
     
-    def _detect_faces(self, image: np.ndarray) -> List[Dict[str, Any]]:
-        """Erkennt und identifiziert Gesichter im Bild (InsightFace GPU)"""
+    @staticmethod
+    def _landmarks_visible(face, x1, y1, x2, y2) -> bool:
+        """True wenn beide Augen, Nase UND Mund sichtbar sind (frontales Gesicht).
+        InsightFace kps = [linkes Auge, rechtes Auge, Nase, linker Mund, rechter Mund]."""
+        kps = getattr(face, 'kps', None)
+        if kps is None or len(kps) < 5:
+            return False
+        pts = np.asarray(kps, dtype=float)
+        w = max(1, x2 - x1); h = max(1, y2 - y1)
+        mx, my = 0.10 * w, 0.10 * h
+        # alle 5 Landmarks muessen (mit kleiner Toleranz) in der Box liegen
+        for px, py in pts:
+            if px < x1 - mx or px > x2 + mx or py < y1 - my or py > y2 + my:
+                return False
+        le, re, nose, lm, rm = pts
+        eye_y = (le[1] + re[1]) / 2.0
+        mouth_y = (lm[1] + rm[1]) / 2.0
+        # vertikale Anordnung: Augen ueber Nase ueber Mund
+        if not (eye_y < nose[1] < mouth_y):
+            return False
+        # frontal: Nase horizontal zwischen den Augen
+        lo, hi = min(le[0], re[0]), max(le[0], re[0])
+        if not (lo <= nose[0] <= hi):
+            return False
+        # kein Profil: Augenabstand >= 20% der Boxbreite
+        if abs(re[0] - le[0]) < 0.20 * w:
+            return False
+        return True
+
+    def _detect_faces(self, image: np.ndarray, require_landmarks: bool = False) -> List[Dict[str, Any]]:
+        """Erkennt und identifiziert Gesichter im Bild (InsightFace GPU).
+        require_landmarks=True (Camera1): nur frontale Gesichter mit Augen/Nase/Mund."""
         faces = []
 
         if not self.face_app:
@@ -489,6 +581,11 @@ class AIAnalyzer:
                 # InsightFace Detection-Konfidenz (ist das ein Gesicht?)
                 det_score = float(getattr(face, 'det_score', 0.0))
 
+                # Camera1: nur frontale Gesichter (Augen, Nase, Mund sichtbar)
+                if require_landmarks and not self._landmarks_visible(face, x1, y1, x2, y2):
+                    logger.debug(f"Gesicht verworfen (keine vollen Landmarks, det={det_score:.2f})")
+                    continue
+
                 # Gesicht mit bekannten vergleichen (Cosine Similarity)
                 name = "Unknown"
                 confidence = det_score  # Fallback: Erkennungs-Score für Unknown-Gesichter
@@ -514,6 +611,7 @@ class AIAnalyzer:
                 faces.append({
                     'name': name,
                     'confidence': confidence,
+                    'det_score': det_score,
                     'bbox': {
                         'x1': int(x1),
                         'y1': int(y1),
@@ -545,6 +643,7 @@ class AIAnalyzer:
             # YOLO Inference mit expliziter GPU-Nutzung
             detections = self.yolo_model(
                 image, 
+                conf=OBJECT_CONF_THRESHOLD,
                 verbose=False,
                 device=self.device,  # Explizit GPU verwenden
                 half=True if self.device == 'cuda' else False  # FP16 auf GPU für Speed
@@ -584,7 +683,7 @@ class AIAnalyzer:
         
         return results
     
-    def analyze_video(self, video_path: Path, sample_rate: int = 30) -> Dict[str, Any]:
+    def analyze_video(self, video_path: Path, sample_rate: int = 30, camera_name: str = None) -> Dict[str, Any]:
         """
         Analysiert Video durch Sampling von Frames - GPU-beschleunigt
         
@@ -624,6 +723,8 @@ class AIAnalyzer:
             best_frame_results = None  # Store complete detections from best frame
             best_frame_image = None  # Store the actual frame image
             best_frame_number = 0  # Store frame number
+            best_plate = None  # bestes Kennzeichen ueber alle Frames (cam1)
+            vehicle_seen = False  # sobald YOLO ein Fahrzeug fand -> dichtes Plate-Sampling
             frame_detections = {}  # frame_number → detections (für annotiertes Video)
 
             while True:
@@ -633,47 +734,73 @@ class AIAnalyzer:
 
                 frame_count += 1
 
-                # Nur jeden N-ten Frame analysieren
+                # Nur jeden N-ten Frame voll analysieren (YOLO + Gesichter).
+                # ABER: sobald ein Fahrzeug gesehen wurde, JEDEN einzelnen Frame
+                # auf Kennzeichen pruefen (extrem dichtes Sampling, bestes OCR gewinnt).
                 if frame_count % sample_rate != 0:
+                    if vehicle_seen:
+                        _yo = self._detect_objects(frame)
+                        if _yo['vehicles']:
+                            # dichte Fahrzeug-Frames im annotierten Video zeigen
+                            frame_detections[frame_count] = {
+                                'faces': [], 'objects': _yo['objects'],
+                                'vehicles': _yo['vehicles']}
+                            _pl = self._detect_plate(frame, _yo['vehicles'])
+                            if _pl and (best_plate is None or _pl['conf'] > best_plate['conf']):
+                                _x1, _y1, _x2, _y2 = _pl['bbox']
+                                _pl['crop'] = frame[_y1:_y2, _x1:_x2].copy()
+                                best_plate = _pl
                     continue
 
                 analyzed_count += 1
 
                 # Frame analysieren
-                frame_results = self.analyze_image_array(frame)
+                frame_results = self.analyze_image_array(frame, camera_name=camera_name)
 
                 # Pro-Frame Detektionen speichern (für annotiertes Video)
-                if frame_results['faces'] or frame_results['persons'] > 0:
+                if frame_results['faces'] or frame_results['persons'] > 0 or frame_results['vehicles']:
                     frame_detections[frame_count] = {
                         'faces': frame_results['faces'].copy(),
                         'objects': frame_results['objects'].copy(),
                         'vehicles': frame_results['vehicles'].copy(),
                     }
 
-                # Best frame = Frame mit dem größten, qualitativ besten Gesicht.
-                # Gesichtsgröße (Pixel) dominiert den Score, da große Gesichter
-                # frontaler und schärfer sind. Frames ohne Gesicht werden ignoriert.
+                # Kennzeichen in DIESEM Frame (cam1, nur im Fahrzeug-Kasten)
+                frame_plate = None
+                if frame_results['vehicles']:
+                    vehicle_seen = True
+                    frame_plate = self._detect_plate(frame, frame_results['vehicles'])
+                    if frame_plate and (best_plate is None or frame_plate['conf'] > best_plate['conf']):
+                        _x1, _y1, _x2, _y2 = frame_plate['bbox']
+                        frame_plate['crop'] = frame[_y1:_y2, _x1:_x2].copy()
+                        best_plate = frame_plate
+
+                # Best-Frame-Score gestaffelt: Kennzeichen > Gesicht > Fahrzeug.
+                # So verlieren Auto-Events ihre Objekte NICHT mehr (Bug-Fix) und das
+                # annotierte Bild zeigt den Frame mit dem am besten lesbaren Kennzeichen.
                 face_score = 0.0
                 for f in frame_results['faces']:
                     bb = f.get('bbox', {})
-                    w = bb.get('x2', 0) - bb.get('x1', 0)
-                    h = bb.get('y2', 0) - bb.get('y1', 0)
-                    area = w * h
-                    det  = f.get('confidence', 0.0)
-                    face_score = max(face_score, area * det)
-                frame_score = face_score  # nur Frames mit Gesicht können gewinnen
+                    area = (bb.get('x2', 0) - bb.get('x1', 0)) * (bb.get('y2', 0) - bb.get('y1', 0))
+                    face_score = max(face_score, area * f.get('confidence', 0.0))
+                veh_score = 0.0
+                for v in frame_results['vehicles']:
+                    bb = v.get('bbox', {})
+                    area = (bb.get('x2', 0) - bb.get('x1', 0)) * (bb.get('y2', 0) - bb.get('y1', 0))
+                    veh_score = max(veh_score, area * v.get('confidence', 0.0))
+                if face_score > 0:
+                    frame_score = 1e6 + face_score             # Gesichts-Frame bevorzugt
+                else:
+                    frame_score = veh_score                    # groesster Fahrzeug-/Objekt-Frame
 
-                # Track best frame (for complete object data with confidence AND face embeddings)
                 if frame_score > 0 and frame_score > best_frame_score:
                     best_frame_score = frame_score
-                    # Store COMPLETE detections (with confidence, bbox, and embeddings!) from best frame
                     best_frame_results = {
-                        'faces': frame_results['faces'].copy(),  # Include faces with embeddings!
+                        'faces': frame_results['faces'].copy(),
                         'objects': frame_results['objects'].copy(),
                         'vehicles': frame_results['vehicles'].copy(),
                         'persons': frame_results['persons']
                     }
-                    # Store the actual frame image (deep copy to avoid memory issues)
                     best_frame_image = frame.copy()
                     best_frame_number = frame_count
                     logger.debug(f"New best frame: #{frame_count}, Score: {frame_score}")
@@ -701,6 +828,7 @@ class AIAnalyzer:
             cap.release()
 
             results['analyzed_frames'] = analyzed_count
+            results['plate'] = best_plate
 
             # Use detections from BEST frame (with confidence, bbox, and embeddings!)
             if best_frame_results:
@@ -736,7 +864,7 @@ class AIAnalyzer:
         
         return results
     
-    def analyze_image_array(self, image: np.ndarray) -> Dict[str, Any]:
+    def analyze_image_array(self, image: np.ndarray, camera_name: str = None) -> Dict[str, Any]:
         """Analysiert Bild als numpy array (für Video-Frames)"""
         results = {
             'faces': [],
@@ -758,7 +886,7 @@ class AIAnalyzer:
                     obj['bbox'] for obj in yolo_results['objects']
                     if obj['class'] == 'person'
                 ]
-                all_faces = self._detect_faces(image)
+                all_faces = self._detect_faces(image, require_landmarks=(camera_name == 'Camera1'))
                 # Nur Gesichter behalten die mit einer YOLO-Person-Bbox überlappen
                 results['faces'] = [
                     f for f in all_faces
@@ -913,11 +1041,18 @@ class FileProcessor:
 
             # Re-encode MPEG-4 → H.264 für Browser-Kompatibilität
             h264_path = out_path.with_suffix('.h264.mp4')
+            # Auf max. 1920 px Breite und 4 Threads: bei 4512x2512 brauchte
+            # libx264 mit allen 20 Threads 4,7 GB und riss MemoryMax=4G von
+            # cam1-ai (OOM-Kill je Clip, 13.09.2026). So ~0,7 GB, und Level 4.0
+            # statt >5.1 -- 4,5K-H.264 spielen viele Browser gar nicht ab.
             import subprocess as _sp
             ret = _sp.run([
-                'ffmpeg', '-hide_banner', '-loglevel', 'warning',
+                'ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'warning',
+                '-threads', '4',
                 '-i', str(out_path),
+                '-vf', "scale='min(1920,iw)':-2",
                 '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-threads', '4',
                 '-movflags', '+faststart',
                 '-y', str(h264_path)
             ], timeout=120)
@@ -1082,8 +1217,8 @@ class FileProcessor:
             for face in results.get('faces', []):
                 query = """
                     INSERT INTO cam2_detected_faces
-                    (recording_id, person_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2, face_embedding)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (recording_id, person_name, confidence, det_score, bbox_x1, bbox_y1, bbox_x2, bbox_y2, face_embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
                 bbox = face.get('bbox', {})
 
@@ -1095,6 +1230,7 @@ class FileProcessor:
                     recording_id,
                     face.get('name', 'Unknown'),
                     face.get('confidence', 0.0),
+                    face.get('det_score', 0.0),
                     bbox.get('x1', 0),
                     bbox.get('y1', 0),
                     bbox.get('x2', 0),
@@ -1126,6 +1262,24 @@ class FileProcessor:
                 )
                 cursor.execute(query, values)
             
+            # Kennzeichen eintragen (cam1, nur bei Treffer)
+            plate = results.get('plate')
+            if plate:
+                crop_rel = None
+                _crop = plate.get('crop')
+                if _crop is not None and getattr(_crop, 'size', 0):
+                    import os as _os
+                    _pdir = '/var/www/web1/annotated/plates'
+                    _os.makedirs(_pdir, exist_ok=True)
+                    _fn = f"plate_{recording_id}_{plate['text']}.jpg"
+                    cv2.imwrite(f'{_pdir}/{_fn}', _crop)
+                    crop_rel = f"annotated/plates/{_fn}"
+                _x1, _y1, _x2, _y2 = plate['bbox']
+                cursor.execute(
+                    "INSERT INTO kfz_kennzeichen (recording_id, plate_text, confidence, bbox_x1,bbox_y1,bbox_x2,bbox_y2, plate_crop_path) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (recording_id, plate['text'], round(plate['conf'], 3), _x1, _y1, _x2, _y2, crop_rel))
+                logger.info(f"\u2713 Kennzeichen erkannt: {plate['text']} ({plate['conf']:.2f})")
+
             # Zusammenfassung eintragen
             query = """
                 INSERT INTO cam2_analysis_summary
@@ -1202,10 +1356,10 @@ class FileProcessor:
                 
                 if file_type == 'jpg':
                     logger.info(f"🔍 Analysiere Bild: {filename}")
-                    analysis_results = self.ai_analyzer.analyze_image(filepath)
+                    analysis_results = self.ai_analyzer.analyze_image(filepath, camera_name=camera_name)
                 elif file_type == 'mp4':
                     logger.info(f"🎥 Analysiere Video: {filename}")
-                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=10)
+                    analysis_results = self.ai_analyzer.analyze_video(filepath, sample_rate=10, camera_name=camera_name)
                 
                 analysis_time = time.time() - analysis_start
                 self.total_analysis_time += analysis_time
