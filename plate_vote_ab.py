@@ -28,6 +28,7 @@ from fast_alpr import ALPR
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import plate_vote  # noqa: E402
+import vehicle_track  # noqa: E402
 
 P = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 VEH_COLS = [2, 3, 5, 7]          # COCO car, motorcycle, bus, truck (as kfz_alpr_v2.py)
@@ -117,7 +118,8 @@ class Reader:
                         pw = (bb.x2 - bb.x1) if bb else None; ph = (bb.y2 - bb.y1) if bb else None
                         raw_cc = getattr(o, "confidence", None)
                         cc = [float(x) for x in raw_cc] if isinstance(raw_cc, (list, tuple)) else None
-                        reads.append({"text": txt, "conf": oc, "plate_w": pw, "plate_h": ph, "char_conf": cc})
+                        reads.append({"text": txt, "conf": oc, "plate_w": pw, "plate_h": ph, "char_conf": cc,
+                                      "bbox": (x1, y1, x2, y2)})
         return reads
 
 
@@ -141,6 +143,25 @@ def clips(n):
     return out
 
 
+def clips_by_rid(rids):
+    """Any cam1 recording by id (also without a kfz row)."""
+    con = connect()
+    with con, con.cursor() as cur:
+        cur.execute("SELECT r.id, (SELECT k.plate_text FROM kfz_kennzeichen k WHERE k.recording_id=r.id LIMIT 1),"
+                    " r.file_path FROM cam2_recordings r WHERE r.id IN (" + ",".join(["%s"] * len(rids)) + ")",
+                    list(rids))
+        rows = cur.fetchall()
+    out = []
+    for rid, txt, fp in rows:
+        p = os.path.join("/var/www/web1", fp)
+        if not os.path.isfile(p):
+            m = glob.glob(f"/var/www/web1/20*/*/{os.path.basename(fp)}")
+            p = m[0] if m else None
+        if p:
+            out.append((rid, txt or "", p))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=40)
@@ -148,18 +169,23 @@ def main():
     ap.add_argument("--out", default="/mnt/archive/plate_ab.tsv")
     ap.add_argument("--rid", type=int, action="append", help="only these recording ids")
     ap.add_argument("--show-reads", action="store_true", help="print every reading with frame number")
+    ap.add_argument("--update-motion", action="store_true",
+                    help="write motion/first_seen_s/last_seen_s/event_s (+ n_reads, plate size) into the "
+                         "existing kfz_kennzeichen rows; plate_text stays untouched")
     a = ap.parse_args()
     rd = Reader()
-    todo = clips(10 ** 6 if a.rid else a.n)
     if a.rid:
-        todo = [c for c in todo if c[0] in set(a.rid)]
+        todo = clips_by_rid(a.rid)
+    else:
+        todo = clips(a.n)
     print(f"{len(todo)} clips on disk", flush=True)
     res = []
     with open(a.out, "w") as f:
         f.write("recording_id\tdb_text\told_text\told_conf\tnew_text\tnew_display\tformat_ok\t"
                 "vote_share\tn_reads\tn_valid\tplate_w_med\tplate_h_med\tfuse_text\tfuse_display\tfuse_raw\tfuse_plate_w\n")
         for i, (rid, dbtxt, path) in enumerate(todo, 1):
-            t0 = time.time(); cap = cv2.VideoCapture(path); fn = 0; reads = []
+            t0 = time.time(); cap = cv2.VideoCapture(path); fn = 0; reads = []; dets = []
+            fps = cap.get(cv2.CAP_PROP_FPS) or None
             while True:
                 ok, fr = cap.read()
                 if not ok:
@@ -168,6 +194,7 @@ def main():
                 if fn % a.step:
                     continue
                 c = rd.cars(fr)
+                dets += [{"frame": fn, "bbox": tuple(int(v) for v in b[:4]), "cls": "vehicle", "conf": b[4]} for b in c]
                 if c:
                     for r in rd.plates(fr, c):
                         r["frame"] = fn
@@ -176,6 +203,20 @@ def main():
             old = max(reads, key=lambda r: r["conf"]) if reads else None
             new = plate_vote.vote(reads)
             fu = plate_vote.fuse(reads)
+            mo = plate_vote.motion(reads, fps) or {}
+            tracks = vehicle_track.track(dets, fps)
+            if a.update_motion and reads:
+                w = [r["plate_w"] for r in fu["top"] if r.get("plate_w")] if fu else []
+                h = [r["plate_h"] for r in fu["top"] if r.get("plate_h")] if fu else []
+                con = connect()
+                with con, con.cursor() as cur:
+                    cur.execute("UPDATE kfz_kennzeichen SET motion=%s, first_seen_s=%s, last_seen_s=%s, event_s=%s,"
+                                " n_reads=COALESCE(n_reads,%s), plate_w=COALESCE(plate_w,%s), plate_h=COALESCE(plate_h,%s)"
+                                " WHERE recording_id=%s",
+                                (mo.get("motion"), mo.get("first_seen_s"), mo.get("last_seen_s"), mo.get("event_s"),
+                                 len(reads), int(statistics.median(w)) if w else None,
+                                 int(statistics.median(h)) if h else None, rid))
+                    con.commit()
             ws = [r["plate_w"] for r in reads if r["plate_w"]]; hs = [r["plate_h"] for r in reads if r["plate_h"]]
             row = [rid, dbtxt, old["text"] if old else "", f"{old['conf']:.2f}" if old else "",
                    new["text"] if new else "", new["display"] if new else "",
@@ -185,6 +226,12 @@ def main():
                    fu["text"] if fu else "", fu["display"] if fu else "", fu["fused_raw"] if fu else "",
                    int(statistics.median([r["plate_w"] for r in fu["top"] if r["plate_w"]] or [0])) if fu else ""]
             f.write("\t".join(map(str, row)) + "\n"); f.flush()
+            for tr in tracks:
+                pr = vehicle_track.plate_for_track(tr, reads)
+                print(f"    track {tr['track_no']}: {tr['motion']:<9} {tr['direction'] or '-':<3} "
+                      f"{tr['start_zone']}->{tr['end_zone']} {tr['first_s']}-{tr['last_s']}s "
+                      f"pts={tr['n_points']} box<={tr['max_box_w']}px plate_reads={len(pr)}"
+                      + (f" ({max(pr, key=lambda r: r['conf'])['text']})" if pr else ""), flush=True)
             if a.show_reads:
                 for r in reads:
                     p = plate_vote.parse_de(r["text"])
@@ -192,6 +239,7 @@ def main():
                           f"plate {r['plate_w']}x{r['plate_h']}px  -> {p['display'] if p else '-'}")
             res.append(row)
             print(f"[{i}/{len(todo)}] rec {rid}: db={dbtxt} old={row[2]} vote={row[5]} fuse={row[13]} "
+                  f"motion={mo.get('motion')} {mo.get('first_seen_s')}-{mo.get('last_seen_s')}s ev={mo.get('event_s')}s "
                   f"reads={len(reads)} share={row[7]} plate={row[10]}x{row[11]}px ({time.time() - t0:.0f}s)",
                   flush=True)
     old_t = Counter(r[2] for r in res if r[2]); new_t = Counter(r[4] for r in res if r[4])

@@ -251,6 +251,58 @@ def fuse(reads, k=3):
                 raw_text=fused, format_ok=True, read=same[0])
 
 
+def motion(reads, fps):
+    """What the vehicle with the plate did during the clip, from its readings over time.
+
+    Uses the car box centre per reading (frame coordinates) and the frame number:
+      * the longest run of readings whose centre stays within `tol` of the run start is the
+        STOP (tol = a quarter of the median car box width, so it scales with distance)
+      * movement before the stop -> the car drove in   (arrival)
+      * movement after the stop  -> the car drove off  (departure)
+      * both -> arrival_departure (short stop inside one clip), neither -> parked,
+        no stop at all -> pass (drove through)
+    -> dict(motion, first_seen_s, last_seen_s, event_s) or None without frame numbers.
+       event_s = arrival: start of the stop; departure: end of the stop; else first sighting.
+    """
+    rs = sorted((r for r in reads if r.get("frame") is not None and r.get("bbox")), key=lambda r: r["frame"])
+    if not rs or not fps:
+        return None
+    cx = [(r["bbox"][0] + r["bbox"][2]) / 2 for r in rs]
+    cy = [(r["bbox"][1] + r["bbox"][3]) / 2 for r in rs]
+    widths = sorted(r["bbox"][2] - r["bbox"][0] for r in rs)
+    tol = 0.25 * widths[len(widths) // 2]
+    best = (0, 0, -1)                       # (length, start, end) of the longest stop run
+    i = 0
+    while i < len(rs):
+        j = i
+        while j + 1 < len(rs) and abs(cx[j + 1] - cx[i]) <= tol and abs(cy[j + 1] - cy[i]) <= tol:
+            j += 1
+        if j - i + 1 > best[0]:
+            best = (j - i + 1, i, j)
+        i = j + 1
+    n, s, e = best
+    sec = lambda k: round(rs[k]["frame"] / fps, 1)
+    first, last = sec(0), sec(len(rs) - 1)
+    span = rs[-1]["frame"] - rs[0]["frame"]
+    stop_frames = rs[e]["frame"] - rs[s]["frame"]
+    if n < 3 or (span and stop_frames < 0.3 * span):
+        return {"motion": "pass", "first_seen_s": first, "last_seen_s": last, "event_s": first}
+
+    def moved(a, b):
+        return any(abs(cx[k] - cx[b]) > tol or abs(cy[k] - cy[b]) > tol for k in a)
+    before = moved(range(0, s), s) if s > 0 else False
+    after = moved(range(e + 1, len(rs)), e) if e < len(rs) - 1 else False
+    if before and after:
+        m, ev = "arrival_departure", sec(s)
+    elif before:
+        m, ev = "arrival", sec(s)
+    elif after:
+        m, ev = "departure", sec(e)
+    else:
+        m, ev = "parked", first
+    return {"motion": m, "first_seen_s": first, "last_seen_s": last, "event_s": ev}
+
+
 if __name__ == "__main__":
     for t in sys.argv[1:] or ["TOLMF582", "TGLMF582", "T0LMF582", "T8LMF582", "TBLMF582", "T01MF582",
                               "10LWF582", "10LMF582", "BNR2456E", "GB6473", "OLFF22", "AA2307JA"]:

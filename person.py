@@ -444,8 +444,12 @@ class AIAnalyzer:
             self.alpr = None
             logger.warning(f"ALPR nicht geladen (Kennzeichen deaktiviert): {e}")
 
-    def _detect_plate(self, frame, vehicles):
-        """Bestes Kennzeichen NUR innerhalb der YOLO-Fahrzeug-Boxen (gegen Landschafts-FP)."""
+    def _detect_plate(self, frame, vehicles, reads=None):
+        """Bestes Kennzeichen NUR innerhalb der YOLO-Fahrzeug-Boxen (gegen Landschafts-FP).
+
+        reads: optional list; every accepted OCR reading of this frame is appended to it
+        (text, conf, char_conf, plate_w/plate_h in px, car bbox) for plate_vote.fuse().
+        """
         if not getattr(self, "alpr", None) or not vehicles:
             return None
         import re as _re
@@ -479,9 +483,99 @@ class AIAnalyzer:
                         oc = _cv(getattr(o, "confidence", 0)); dc = _cv(getattr(d, "confidence", 0))
                         txt = _re.sub(r"[^A-Z0-9]", "", (o.text or "").upper())
                         if oc < 0.60 or dc < 0.25 or len(txt) < 5: continue
+                        if reads is not None:
+                            pb = getattr(d, "bounding_box", None)
+                            _cc = getattr(o, "confidence", None)
+                            reads.append({
+                                "text": txt, "conf": oc, "bbox": (x1, y1, x2, y2),
+                                "char_conf": [float(x) for x in _cc] if isinstance(_cc, (list, tuple)) else None,
+                                "plate_w": int(pb.x2 - pb.x1) if pb else None,
+                                "plate_h": int(pb.y2 - pb.y1) if pb else None})
                         if best is None or oc > best["conf"]:
                             best = {"text": txt, "conf": oc, "bbox": (x1, y1, x2, y2)}
         return best
+
+    @staticmethod
+    def _keep_plate_crops(reads, start, frame, keep=12, frame_no=None):
+        """Attach frame number and car crop to the readings appended since `start`, but keep
+        crops only for the `keep` widest plates of the clip (fuse() picks from the widest
+        ones; bounds RAM). The frame number feeds plate_vote.motion()."""
+        for r in reads[start:]:
+            r["frame"] = frame_no
+            _x1, _y1, _x2, _y2 = r["bbox"]
+            r["crop"] = frame[_y1:_y2, _x1:_x2].copy()
+        with_crop = [r for r in reads if r.get("crop") is not None]
+        if len(with_crop) > keep:
+            with_crop.sort(key=lambda r: (r.get("plate_w") or 0, r["conf"]), reverse=True)
+            for r in with_crop[keep:]:
+                r["crop"] = None
+
+    @staticmethod
+    def _collect_vehicle_dets(dets, vehicles, frame_no):
+        for v in vehicles:
+            bb = v.get("bbox", {})
+            dets.append({"frame": frame_no, "cls": v.get("class"), "conf": v.get("confidence", 0.0),
+                         "bbox": (int(bb.get("x1", 0)), int(bb.get("y1", 0)), int(bb.get("x2", 0)), int(bb.get("y2", 0)))})
+
+    @staticmethod
+    def _vehicle_tracks(dets, reads, fps):
+        """Every vehicle of the clip with what it did (vehicle_track.py, plate-independent).
+        A plate is attached when readings fall on the track (fused if >= 3, else the most
+        confident one, may be partial). Fail-safe: [] on any error."""
+        if not dets:
+            return []
+        try:
+            import vehicle_track, plate_vote
+            out = []
+            for tr in vehicle_track.track(dets, fps):
+                pr = vehicle_track.plate_for_track(tr, reads or [])
+                txt = None
+                if len(pr) >= 3:
+                    fu = plate_vote.fuse(pr)
+                    txt = fu["text"] if fu else None
+                elif pr:
+                    txt = max(pr, key=lambda r: r["conf"])["text"]
+                tr.pop("bboxes", None)
+                tr.update(plate_text=txt, plate_reads=len(pr))
+                out.append(tr)
+            return out
+        except Exception as e:
+            logger.warning(f"vehicle_track fehlgeschlagen: {e}")
+            return []
+
+    @staticmethod
+    def _fuse_plate(reads, best_plate, fps=None):
+        """Clip result: plate_vote.fuse() over all readings (3 best large/upright plates,
+        char-wise, German format + district list). Falls back to the most confident single
+        reading (old behaviour) if plate_vote is unavailable or fails."""
+        if not reads:
+            return best_plate
+        mo = None
+        try:
+            import plate_vote
+            fu = plate_vote.fuse(reads)
+            mo = plate_vote.motion(reads, fps)
+        except Exception as e:
+            logger.warning(f"plate_vote.fuse fehlgeschlagen, nehme beste Einzel-Lesung: {e}")
+            fu = None
+        if not fu:
+            if best_plate:
+                best_plate.update(method="best1", raw_text=best_plate["text"], n_reads=len(reads), **(mo or {}))
+            return best_plate
+        r = fu["read"]
+        crop = r.get("crop")
+        if crop is None:  # fused reading without stored crop -> widest reading that has one
+            cands = [x for x in fu["top"] if x.get("crop") is not None] or \
+                    [x for x in reads if x.get("crop") is not None]
+            if cands:
+                r = max(cands, key=lambda x: (x.get("plate_w") or 0, x["conf"]))
+                crop = r["crop"]
+        if crop is None and best_plate:
+            crop = best_plate.get("crop")
+        return {"text": fu["text"], "conf": fu["conf"], "bbox": r["bbox"], "crop": crop,
+                "raw_text": fu["raw_text"], "method": "fuse3", "n_reads": len(reads),
+                "plate_w": r.get("plate_w"), "plate_h": r.get("plate_h"),
+                "format_ok": int(bool(fu["format_ok"])), "district": fu.get("district"), **(mo or {})}
 
     def analyze_image(self, image_path: Path, camera_name: str = None) -> Dict[str, Any]:
         """Analysiert ein einzelnes Bild"""
@@ -711,6 +805,7 @@ class AIAnalyzer:
             
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             results['total_frames'] = total_frames
+            video_fps = cap.get(cv2.CAP_PROP_FPS) or None  # for plate_vote.motion (read before release)
             
             frame_count = 0
             analyzed_count = 0
@@ -724,6 +819,9 @@ class AIAnalyzer:
             best_frame_image = None  # Store the actual frame image
             best_frame_number = 0  # Store frame number
             best_plate = None  # bestes Kennzeichen ueber alle Frames (cam1)
+            plate_reads = []   # alle OCR-Lesungen des Clips -> plate_vote.fuse() am Ende
+            vehicle_dets = []  # alle Fahrzeug-Boxen des Clips -> vehicle_track (pass/entry/exit)
+            track_vehicles = str(camera_name or "").startswith("Camera1")  # Zonen nur fuer cam1
             vehicle_seen = False  # sobald YOLO ein Fahrzeug fand -> dichtes Plate-Sampling
             frame_detections = {}  # frame_number → detections (für annotiertes Video)
 
@@ -741,11 +839,15 @@ class AIAnalyzer:
                     if vehicle_seen:
                         _yo = self._detect_objects(frame)
                         if _yo['vehicles']:
+                            if track_vehicles:
+                                self._collect_vehicle_dets(vehicle_dets, _yo['vehicles'], frame_count)
                             # dichte Fahrzeug-Frames im annotierten Video zeigen
                             frame_detections[frame_count] = {
                                 'faces': [], 'objects': _yo['objects'],
                                 'vehicles': _yo['vehicles']}
-                            _pl = self._detect_plate(frame, _yo['vehicles'])
+                            _n0 = len(plate_reads)
+                            _pl = self._detect_plate(frame, _yo['vehicles'], plate_reads)
+                            self._keep_plate_crops(plate_reads, _n0, frame, frame_no=frame_count)
                             if _pl and (best_plate is None or _pl['conf'] > best_plate['conf']):
                                 _x1, _y1, _x2, _y2 = _pl['bbox']
                                 _pl['crop'] = frame[_y1:_y2, _x1:_x2].copy()
@@ -769,7 +871,11 @@ class AIAnalyzer:
                 frame_plate = None
                 if frame_results['vehicles']:
                     vehicle_seen = True
-                    frame_plate = self._detect_plate(frame, frame_results['vehicles'])
+                    if track_vehicles:
+                        self._collect_vehicle_dets(vehicle_dets, frame_results['vehicles'], frame_count)
+                    _n0 = len(plate_reads)
+                    frame_plate = self._detect_plate(frame, frame_results['vehicles'], plate_reads)
+                    self._keep_plate_crops(plate_reads, _n0, frame, frame_no=frame_count)
                     if frame_plate and (best_plate is None or frame_plate['conf'] > best_plate['conf']):
                         _x1, _y1, _x2, _y2 = frame_plate['bbox']
                         frame_plate['crop'] = frame[_y1:_y2, _x1:_x2].copy()
@@ -828,7 +934,9 @@ class AIAnalyzer:
             cap.release()
 
             results['analyzed_frames'] = analyzed_count
-            results['plate'] = best_plate
+            results['plate'] = self._fuse_plate(plate_reads, best_plate, video_fps)
+            results['vehicle_tracks'] = self._vehicle_tracks(vehicle_dets, plate_reads, video_fps) if track_vehicles else []
+            plate_reads = None  # release the crops
 
             # Use detections from BEST frame (with confidence, bbox, and embeddings!)
             if best_frame_results:
@@ -1271,14 +1379,39 @@ class FileProcessor:
                     import os as _os
                     _pdir = '/var/www/web1/annotated/plates'
                     _os.makedirs(_pdir, exist_ok=True)
-                    _fn = f"plate_{recording_id}_{plate['text']}.jpg"
+                    # file name ASCII only (T\u00d6L -> TOEL), the web pages build URLs from it
+                    _ascii = plate['text'].replace('\u00c4', 'AE').replace('\u00d6', 'OE').replace('\u00dc', 'UE')
+                    _fn = f"plate_{recording_id}_{_ascii}.jpg"
                     cv2.imwrite(f'{_pdir}/{_fn}', _crop)
                     crop_rel = f"annotated/plates/{_fn}"
                 _x1, _y1, _x2, _y2 = plate['bbox']
                 cursor.execute(
-                    "INSERT INTO kfz_kennzeichen (recording_id, plate_text, confidence, bbox_x1,bbox_y1,bbox_x2,bbox_y2, plate_crop_path) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (recording_id, plate['text'], round(plate['conf'], 3), _x1, _y1, _x2, _y2, crop_rel))
-                logger.info(f"\u2713 Kennzeichen erkannt: {plate['text']} ({plate['conf']:.2f})")
+                    "INSERT INTO kfz_kennzeichen (recording_id, plate_text, confidence, bbox_x1,bbox_y1,bbox_x2,bbox_y2, plate_crop_path,"
+                    " raw_text, method, n_reads, plate_w, plate_h, format_ok, district,"
+                    " motion, first_seen_s, last_seen_s, event_s)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (recording_id, plate['text'], round(plate['conf'], 3), _x1, _y1, _x2, _y2, crop_rel,
+                     plate.get('raw_text'), plate.get('method', 'best1'), plate.get('n_reads'),
+                     plate.get('plate_w'), plate.get('plate_h'), plate.get('format_ok'), plate.get('district'),
+                     plate.get('motion'), plate.get('first_seen_s'), plate.get('last_seen_s'), plate.get('event_s')))
+                logger.info(f"\u2713 Kennzeichen erkannt: {plate['text']} ({plate['conf']:.2f}, "
+                            f"{plate.get('method', 'best1')}, roh {plate.get('raw_text')}, "
+                            f"{plate.get('n_reads')} Lesungen, Schild {plate.get('plate_w')}x{plate.get('plate_h')}px, "
+                            f"{plate.get('motion')} @ {plate.get('event_s')} s)")
+
+            # Fahrzeug-Bahnen (cam1): pass / entry / exit / parked, unabhaengig vom Kennzeichen
+            for tr in results.get('vehicle_tracks') or []:
+                cursor.execute(
+                    "INSERT INTO cam1_vehicle_tracks (recording_id, track_no, vehicle_class, motion, direction,"
+                    " start_zone, end_zone, first_s, last_s, n_points, max_box_w, plate_text, plate_reads)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (recording_id, tr['track_no'], tr.get('vehicle_class'), tr['motion'], tr.get('direction'),
+                     tr.get('start_zone'), tr.get('end_zone'), tr.get('first_s'), tr.get('last_s'),
+                     tr.get('n_points'), tr.get('max_box_w'), tr.get('plate_text'), tr.get('plate_reads')))
+            if results.get('vehicle_tracks'):
+                logger.info("\u2713 Fahrzeuge: " + ", ".join(
+                    f"{t['vehicle_class']} {t['motion']}" + (f" ({t['plate_text']})" if t.get('plate_text') else "")
+                    for t in results['vehicle_tracks']))
 
             # Zusammenfassung eintragen
             query = """

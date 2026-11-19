@@ -13,6 +13,8 @@ key (O/Q/D/U/G -> 0, T/I/J -> 1, B -> 8, S -> 5, Z -> 2, W -> M), and keys that 
 one edit (same length class) are merged. The group name is its most frequent spelling.
 Known landscape false positives (e.g. GB6473, the plate detector hallucinating in trees) are
 listed separately and left out of the vehicle count.
+Also: vehicle movements from cam1_vehicle_tracks (pass / entry / exit, plate-independent) and
+visits (arrival -> departure per vehicle) from kfz_kennzeichen.motion.
 Separate groups at the end: district prefixes (--prefix, default BN = Bonn) and electric vehicles
 (E plates: identification number ending in digit + E, any district). Deutsche Post / DHL is assigned
 by the BN prefix ONLY - its fleet runs on petrol/diesel too, so an E plate alone says nothing.
@@ -59,7 +61,7 @@ def fetch(con, days, min_conf):
         params.append(min_conf)
     sql = f"""
         SELECT k.id, k.plate_text, k.confidence, k.detected_at, k.recording_id,
-               r.camera_name, r.recorded_at
+               r.camera_name, r.recorded_at, k.motion, k.event_s
         FROM kfz_kennzeichen k
         LEFT JOIN cam2_recordings r ON r.id = k.recording_id
         WHERE {' AND '.join(where)}
@@ -124,6 +126,76 @@ def group_texts(counts):
 
 def fmt_ts(t):
     return t.strftime("%d.%m. %H:%M") if t else "-"
+
+
+def report_movements(con, days):
+    """cam1_vehicle_tracks: every vehicle per clip, plate-independent (vehicle_track.py)."""
+    where, params = "", []
+    if days:
+        where, params = "WHERE event_at >= NOW() - INTERVAL %s DAY", [days]
+    try:
+        with con.cursor() as cur:
+            cur.execute(f"SELECT * FROM cam1_vehicle_events {where} ORDER BY event_at", params)
+            rows = cur.fetchall()
+    except pymysql.MySQLError as e:
+        print(f"\nVehicle movements: not available ({e.args[-1]})")
+        return
+    rows = [r for r in rows if r["vehicle_class"] != "bicycle"]
+    print(f"\nVehicle movements (cam1, plate-independent, {len(rows)} vehicles; since 19.11.2026)")
+    if not rows:
+        print("  none yet")
+        return
+    per_day = defaultdict(Counter)
+    for r in rows:
+        per_day[r["event_at"].date()][r["motion"]] += 1
+    kinds = ["pass", "entry", "exit", "yard_move", "parked", "road_stop"]
+    print("  day         " + " ".join(f"{k:>9}" for k in kinds))
+    for d in sorted(per_day):
+        print(f"  {d:%a %d.%m.}  " + " ".join(f"{per_day[d][k]:9d}" for k in kinds))
+    ev = [r for r in rows if r["motion"] in ("entry", "exit", "pass")][-15:]
+    if ev:
+        print("  last entries / exits / passes:")
+        for r in ev:
+            print(f"    {fmt_ts(r['event_at'])}  {r['motion']:<5} {r['direction'] or '-':<3} "
+                  f"{r['vehicle_class']:<10} {r['plate_text'] or ''}")
+
+
+def report_visits(rows, rep):
+    """Arrival -> departure per vehicle from kfz_kennzeichen.motion (plate_vote.motion)."""
+    ev = [r for r in rows if r.get("motion") in ("arrival", "departure", "arrival_departure")]
+    print(f"\nVisits (arrival -> departure per vehicle, {len(ev)} events)")
+    if not ev:
+        print("  none (motion is filled from 19.11.2026 on, older clips by the backfill)")
+        return
+
+    def at(r):
+        from datetime import timedelta
+        return r["recorded_at"] + timedelta(seconds=r.get("event_s") or 0)
+    by_vehicle = defaultdict(list)
+    for r in ev:
+        by_vehicle[rep.get(r["plate_text"], r["plate_text"])].append(r)
+    print(f"  {'plate':<10} {'arrival':<12} {'departure':<12} {'duration':>9}")
+    for v, rs in sorted(by_vehicle.items(), key=lambda kv: -len(kv[1])):
+        rs.sort(key=at)
+        open_arr = None
+        for r in rs:
+            m = r["motion"]
+            if m == "arrival_departure":
+                print(f"  {v:<10} {fmt_ts(at(r)):<12} {'(same clip)':<12} {'short':>9}")
+            elif m == "arrival":
+                if open_arr:
+                    print(f"  {v:<10} {fmt_ts(at(open_arr)):<12} {'?':<12} {'':>9}")
+                open_arr = r
+            elif m == "departure":
+                if open_arr:
+                    dur = at(r) - at(open_arr)
+                    h, mnt = divmod(int(dur.total_seconds()) // 60, 60)
+                    print(f"  {v:<10} {fmt_ts(at(open_arr)):<12} {fmt_ts(at(r)):<12} {h:6d}:{mnt:02d}")
+                    open_arr = None
+                else:
+                    print(f"  {v:<10} {'?':<12} {fmt_ts(at(r)):<12} {'':>9}")
+        if open_arr:
+            print(f"  {v:<10} {fmt_ts(at(open_arr)):<12} {'still there':<12} {'':>9}")
 
 
 def report_prefix(rows, prefix):
@@ -247,6 +319,12 @@ def main():
     for prefix in a.prefix:
         report_prefix(real, prefix.upper())
     report_electric(real)
+    report_visits(real, rep)
+    try:
+        with connect() as con2:
+            report_movements(con2, a.days)
+    except pymysql.MySQLError as e:
+        print(f"\nVehicle movements: wagodb not reachable ({e})")
 
     if a.raw:
         print("\nAll texts")

@@ -1,0 +1,5 @@
+{
+  "comment": "cam1 zones, full-resolution pixels (4512x2512). road = public road strip along the fence; everything else = property. Proposal 19.11.2026, check https://cam1.heissa.de/zones/cam1_zones.jpg",
+  "image_size": [4512, 2512],
+  "road": [[1112, 693], [2739, 0], [3046, 0], [3029, 81], [1805, 844], [1418, 806]]
+}
